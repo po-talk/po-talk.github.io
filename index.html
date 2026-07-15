@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ぱっと通話 — WebRTC voice room</title>
+<style>
+  :root{ color-scheme:dark }
+  *{ box-sizing:border-box }
+  body{ margin:0; font-family:system-ui,"Hiragino Sans",sans-serif;
+    background:radial-gradient(1000px 700px at 80% -10%,#1c2b48,#0d1424 60%,#090e1a);
+    color:#eef2f8; min-height:100vh; display:flex; align-items:center; justify-content:center; padding:24px }
+  .card{ width:100%; max-width:440px; background:rgba(255,255,255,.04);
+    border:1px solid rgba(255,255,255,.09); border-radius:18px; padding:28px }
+  h1{ margin:0 0 4px; font-size:22px }
+  p.sub{ margin:0 0 20px; color:#9fb0c7; font-size:14px; line-height:1.6 }
+  label{ display:block; font-size:13px; color:#9fb0c7; margin:14px 0 6px }
+  input{ width:100%; padding:12px 14px; border-radius:10px; border:1px solid rgba(255,255,255,.12);
+    background:#0d1526; color:#eef2f8; font-size:15px }
+  button{ width:100%; margin-top:14px; padding:14px; border:0; border-radius:12px; font-size:16px; font-weight:700; cursor:pointer }
+  #join{ background:#00e5cc; color:#063 }
+  #mute{ background:#2a3550; color:#eef2f8; display:none }
+  #leave{ background:#ff5d5d; color:#fff; display:none }
+  .status{ margin-top:18px; padding:14px; border-radius:10px; background:#0d1526; font-size:14px; line-height:1.7 }
+  .dot{ display:inline-block; width:9px; height:9px; border-radius:50%; background:#48507a; margin-right:7px; vertical-align:middle }
+  .dot.on{ background:#00e5cc; box-shadow:0 0 8px #00e5cc }
+  .peers{ font-size:26px; font-weight:800; color:#00e5cc }
+  a.share{ color:#00e5cc; word-break:break-all; font-size:13px }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>🦞 ぱっと通話</h1>
+  <p class="sub">同じ部屋名を開いた人どうしが、そのまま音声通話（WebRTC・P2P）。サーバ不要。</p>
+
+  <label for="room">部屋名</label>
+  <input id="room" placeholder="lobby" autocomplete="off">
+
+  <button id="join">🎙 参加する</button>
+  <button id="mute">🔇 ミュート</button>
+  <button id="leave">📴 退出</button>
+
+  <div class="status">
+    <div><span class="dot" id="dot"></span><span id="state">未参加</span></div>
+    <div style="margin-top:8px">接続中の相手：<span class="peers" id="count">0</span> 人</div>
+    <div style="margin-top:10px" id="shareWrap" hidden>共有リンク：<br><a class="share" id="share" href="#"></a></div>
+  </div>
+</div>
+
+<script type="module">
+// Trystero (nostr strategy) = サーバレスなシグナリング。バックエンド不要。
+import {joinRoom} from 'https://esm.sh/trystero/nostr'
+
+const $ = id => document.getElementById(id)
+const roomInput = $('room')
+roomInput.value = decodeURIComponent(location.hash.slice(1)) || ''
+
+let room, myStream, muted = false
+const peers = new Set()
+
+const setState = (t, on) => { $('state').textContent = t; $('dot').classList.toggle('on', !!on) }
+const setCount = () => { $('count').textContent = peers.size }
+
+$('join').onclick = async () => {
+  const roomId = roomInput.value.trim() || 'lobby'
+  location.hash = encodeURIComponent(roomId)
+  $('share').textContent = location.href
+  $('share').href = location.href
+  $('shareWrap').hidden = false
+
+  try {
+    myStream = await navigator.mediaDevices.getUserMedia({audio:true})
+  } catch (e) {
+    setState('⚠️ マイクの許可が必要です（https/localhostで開いてね）', false); return
+  }
+
+  room = joinRoom({appId:'kuramo-webrtc-call'}, roomId)
+  room.addStream(myStream)
+  room.onPeerStream(stream => {
+    const a = document.createElement('audio')
+    a.srcObject = stream; a.autoplay = true; a.playsInline = true
+    document.body.appendChild(a)
+  })
+  room.onPeerJoin(id => { peers.add(id); setCount() })
+  room.onPeerLeave(id => { peers.delete(id); setCount() })
+
+  setState('参加中：' + roomId, true)
+  $('join').style.display='none'; $('mute').style.display='block'; $('leave').style.display='block'
+  roomInput.disabled = true
+}
+
+$('mute').onclick = () => {
+  muted = !muted
+  myStream.getAudioTracks().forEach(t => t.enabled = !muted)
+  $('mute').textContent = muted ? '🔊 ミュート解除' : '🔇 ミュート'
+}
+
+$('leave').onclick = () => {
+  if (room) room.leave()
+  if (myStream) myStream.getTracks().forEach(t => t.stop())
+  peers.clear(); setCount(); setState('退出しました', false)
+  $('join').style.display='block'; $('mute').style.display='none'; $('leave').style.display='none'
+  roomInput.disabled = false
+}
+</script>
+</body>
+</html>
