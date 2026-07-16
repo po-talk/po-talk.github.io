@@ -109,7 +109,7 @@ $('join').onclick = async () => {
   setState('② 接続ライブラリを読込中…', false)
   let joinRoom
   try {
-    ({ joinRoom } = await import('https://esm.sh/trystero/nostr?bundle')
+    ({ joinRoom } = await import('https://esm.sh/trystero/nostr?bundle'))
   } catch (e) {
     setState('❌ ライブラリ読込失敗: ' + (e.message || e), false); return
   }
@@ -118,13 +118,13 @@ $('join').onclick = async () => {
   try {
     room = joinRoom({ appId: 'kuramo-webrtc-call' }, roomId)
     room.addStream(myStream)
-    room.onPeerStream(stream => {
+    room.onPeerStream = (stream, id) => {
       const a = document.createElement('audio')
       a.srcObject = stream; a.autoplay = true; a.playsInline = true
       document.body.appendChild(a); audios.push(a); play(a)
-    })
-    room.onPeerJoin(id => { peers.add(id); setCount() })
-    room.onPeerLeave(id => { peers.delete(id); setCount() })
+    }
+    room.onPeerJoin = id => { peers.add(id); room.addStream(myStream, { target: id }); setCount() }
+    room.onPeerLeave = id => { peers.delete(id); setCount() }
   } catch (e) {
     setState('❌ 接続失敗: ' + (e.message || e), false); return
   }
