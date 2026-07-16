@@ -1,4 +1,4 @@
-# 🦞 ぽっと通話 (webrtc-call)
+# 🦞 ぽっと通話 (po-call)
 
 同じ部屋名を開いた人どうしが、そのまま音声通話できる**静的Webページ**。
 WebRTC の P2P 音声 ＋ [Trystero](https://github.com/dmotz/trystero)（サーバレスなシグナリング）で、**バックエンド不要・HTML1枚**。
