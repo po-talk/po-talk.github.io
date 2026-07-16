@@ -109,7 +109,7 @@ $('join').onclick = async () => {
   setState('② 接続ライブラリを読込中…', false)
   let joinRoom
   try {
-    ({ joinRoom } = await import('https://esm.sh/trystero/nostr'))
+    ({ joinRoom } = await import('https://esm.sh/trystero/nostr?bundle')
   } catch (e) {
     setState('❌ ライブラリ読込失敗: ' + (e.message || e), false); return
   }
