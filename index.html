@@ -116,7 +116,24 @@ $('join').onclick = async () => {
 
   // ③ 部屋に参加
   try {
-    room = joinRoom({ appId: 'kuramo-webrtc-call' }, roomId)
+    room = joinRoom({
+      appId: 'kuramo-webrtc-call',
+      // 相手発見を速く・確実に：信頼できるnostrリレーを明示＋多重接続（デフォルトの当たり外れ対策）
+      relayUrls: [
+        'wss://relay.damus.io',
+        'wss://nos.lol',
+        'wss://relay.primal.net',
+        'wss://relay.nostr.band',
+        'wss://offchain.pub'
+      ],
+      relayRedundancy: 5,
+      // NAT越え保険：直接繋がらない回線でも中継で確立（登録不要の公開 Open Relay）
+      turnConfig: [
+        { urls: 'turn:openrelay.metered.ca:80',                username: 'openrelayproject', credential: 'openrelayproject' },
+        { urls: 'turn:openrelay.metered.ca:443',               username: 'openrelayproject', credential: 'openrelayproject' },
+        { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
+      ]
+    }, roomId)
     room.addStream(myStream)
     room.onPeerStream = (stream, id) => {
       const a = document.createElement('audio')
@@ -141,10 +158,11 @@ $('mute').onclick = () => {
 }
 
 $('leave').onclick = () => {
-  if (room) room.leave()
-  if (myStream) myStream.getTracks().forEach(t => t.stop())
+  if (room) { room.leave(); room = null }
+  if (myStream) { myStream.getTracks().forEach(t => t.stop()); myStream = null }
+  audios.forEach(a => { a.srcObject = null; a.remove() }); audios.length = 0
   wantWake = false; if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null }
-  peers.clear(); setCount(); audios.length = 0; setState('退出しました', false)
+  peers.clear(); setCount(); setState('退出しました', false)
   $('join').style.display = 'block'; $('mute').style.display = 'none'; $('leave').style.display = 'none'; $('unlock').style.display = 'none'
   roomInput.disabled = false
 }
