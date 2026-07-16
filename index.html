@@ -28,14 +28,14 @@
   #copy{ background:#1d2740; color:#cfe; margin-top:8px; padding:10px; font-size:14px }
   .status{ margin-top:18px; padding:14px; border-radius:10px; background:#0d1526; font-size:14px; line-height:1.7 }
   .dot{ display:inline-block; width:9px; height:9px; border-radius:50%; background:#48507a; margin-right:7px; vertical-align:middle }
-  .dot.on{ background:#00e5cc; box-shadow:0 0 8px #00e5cc }
+  .dot.on{ background:#00e5cc }
   .peers{ font-size:26px; font-weight:800; color:#00e5cc }
   a.share{ color:#00e5cc; word-break:break-all; font-size:13px }
 </style>
 </head>
 <body>
 <div id="banner" class="banner" hidden>
-  ⚠️ このアプリ内ブラウザではマイクが使えないことがあります。<b>Safari / Chrome で開いて</b>ください。
+  ⚠️ アプリ内ブラウザではマイクが使えないことがあります。<b>Safari / Chrome で開いて</b>ください。
   <button id="copyTop">🔗 このリンクをコピー</button>
 </div>
 
@@ -62,18 +62,12 @@
 </div>
 
 <script type="module">
-// Trystero (nostr strategy) = サーバレスなシグナリング。バックエンド不要。
-// import {joinRoom} from 'https://esm.sh/trystero/nostr'
-import {joinRoom} from 'https://esm.sh/trystero/torrent'
-
 const $ = id => document.getElementById(id)
 
-// --- アプリ内ブラウザ検知（マイク不可なことがある） ---
-const ua = navigator.userAgent || ''
-if (/(FBAN|FBAV|Instagram|Line\/|Twitter|MicroMessenger|; wv\))/i.test(ua)) $('banner').hidden = false
+// アプリ内ブラウザ検知（マイク不可なことがある）
+if (/(FBAN|FBAV|Instagram|Line\/|Twitter|MicroMessenger|; wv\))/i.test(navigator.userAgent || '')) $('banner').hidden = false
 
-// --- リンクコピー ---
-async function copyLink(btn){
+const copyLink = async btn => {
   try { await navigator.clipboard.writeText(location.href); btn.textContent = 'コピーしました ✓' }
   catch { btn.textContent = '長押しでコピー: ' + location.href }
 }
@@ -83,21 +77,19 @@ $('copy').onclick    = () => copyLink($('copy'))
 const roomInput = $('room')
 roomInput.value = decodeURIComponent(location.hash.slice(1)) || ''
 
-let room, myStream, muted=false, wantWake=false, wakeLock=null
+let room, myStream, muted = false, wantWake = false, wakeLock = null
 const peers = new Set()
 const audios = []
 
-const setState=(t,on)=>{ $('state').textContent=t; $('dot').classList.toggle('on',!!on) }
-const setCount=()=>{ $('count').textContent=peers.size }
+const setState = (t, on) => { $('state').textContent = t; $('dot').classList.toggle('on', !!on) }
+const setCount = () => { $('count').textContent = peers.size }
+const play = el => el.play().catch(() => { $('unlock').style.display = 'block' })
 
-// iOS等で自動再生がブロックされたら「音声を有効化」ボタンを出す
-function playAudio(el){ el.play().catch(()=>{ $('unlock').style.display='block' }) }
-$('unlock').onclick = () => { audios.forEach(a=>a.play().catch(()=>{})); $('unlock').style.display='none' }
+$('unlock').onclick = () => { audios.forEach(a => a.play().catch(() => {})); $('unlock').style.display = 'none' }
 
-// 画面スリープ防止（対応端末のみ・失敗しても無視）
-async function acquireWake(){ try{ wakeLock = await navigator.wakeLock.request('screen') }catch{} }
+const wake = async () => { try { wakeLock = await navigator.wakeLock.request('screen') } catch {} }
 document.addEventListener('visibilitychange', () => {
-  if (wantWake && document.visibilityState === 'visible') acquireWake()
+  if (wantWake && document.visibilityState === 'visible') wake()
 })
 
 $('join').onclick = async () => {
@@ -105,22 +97,41 @@ $('join').onclick = async () => {
   location.hash = encodeURIComponent(roomId)
   $('share').textContent = location.href; $('share').href = location.href; $('shareWrap').hidden = false
 
-  try { myStream = await navigator.mediaDevices.getUserMedia({audio:true}) }
-  catch(e){ setState('⚠️ マイク許可が必要（Safari/Chrome・https で開いてね）', false); return }
+  // ① マイク取得
+  setState('① マイクを取得中…（許可を押して）', false)
+  try {
+    myStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+  } catch (e) {
+    setState('❌ マイク取得失敗: ' + e.name, false); return
+  }
 
-  room = joinRoom({appId:'kuramo-webrtc-call'}, roomId)
-  room.addStream(myStream)
-  room.onPeerStream(stream => {
-    const a = document.createElement('audio')
-    a.srcObject = stream; a.autoplay = true; a.playsInline = true
-    document.body.appendChild(a); audios.push(a); playAudio(a)
-  })
-  room.onPeerJoin(id => { peers.add(id); setCount() })
-  room.onPeerLeave(id => { peers.delete(id); setCount() })
+  // ② 接続ライブラリ読込
+  setState('② 接続ライブラリを読込中…', false)
+  let joinRoom
+  try {
+    ({ joinRoom } = await import('https://esm.sh/trystero/nostr'))
+  } catch (e) {
+    setState('❌ ライブラリ読込失敗: ' + (e.message || e), false); return
+  }
 
-  wantWake = true; acquireWake()
-  setState('参加中：' + roomId, true)
-  $('join').style.display='none'; $('mute').style.display='block'; $('leave').style.display='block'
+  // ③ 部屋に参加
+  try {
+    room = joinRoom({ appId: 'kuramo-webrtc-call' }, roomId)
+    room.addStream(myStream)
+    room.onPeerStream(stream => {
+      const a = document.createElement('audio')
+      a.srcObject = stream; a.autoplay = true; a.playsInline = true
+      document.body.appendChild(a); audios.push(a); play(a)
+    })
+    room.onPeerJoin(id => { peers.add(id); setCount() })
+    room.onPeerLeave(id => { peers.delete(id); setCount() })
+  } catch (e) {
+    setState('❌ 接続失敗: ' + (e.message || e), false); return
+  }
+
+  wantWake = true; wake()
+  setState('🟢 参加中：' + roomId + '（相手を探しています…）', true)
+  $('join').style.display = 'none'; $('mute').style.display = 'block'; $('leave').style.display = 'block'
   roomInput.disabled = true
 }
 
@@ -132,9 +143,9 @@ $('mute').onclick = () => {
 $('leave').onclick = () => {
   if (room) room.leave()
   if (myStream) myStream.getTracks().forEach(t => t.stop())
-  wantWake = false; if (wakeLock){ wakeLock.release().catch(()=>{}); wakeLock=null }
+  wantWake = false; if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null }
   peers.clear(); setCount(); audios.length = 0; setState('退出しました', false)
-  $('join').style.display='block'; $('mute').style.display='none'; $('leave').style.display='none'; $('unlock').style.display='none'
+  $('join').style.display = 'block'; $('mute').style.display = 'none'; $('leave').style.display = 'none'; $('unlock').style.display = 'none'
   roomInput.disabled = false
 }
 </script>
