@@ -2,25 +2,30 @@
 <html lang="ja">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>ぱっと通話 — WebRTC voice room</title>
 <style>
   :root{ color-scheme:dark }
   *{ box-sizing:border-box }
   body{ margin:0; font-family:system-ui,"Hiragino Sans",sans-serif;
     background:radial-gradient(1000px 700px at 80% -10%,#1c2b48,#0d1424 60%,#090e1a);
-    color:#eef2f8; min-height:100vh; display:flex; align-items:center; justify-content:center; padding:24px }
+    color:#eef2f8; min-height:100vh; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:24px }
+  .banner{ width:100%; max-width:440px; margin-bottom:14px; padding:12px 14px; border-radius:12px;
+    background:#4a3a10; border:1px solid #a9871f; color:#ffe9b0; font-size:13px; line-height:1.6 }
+  .banner button{ margin-top:8px; width:100%; padding:9px; border:0; border-radius:8px; background:#ffd24d; color:#3a2c00; font-weight:700; cursor:pointer }
   .card{ width:100%; max-width:440px; background:rgba(255,255,255,.04);
     border:1px solid rgba(255,255,255,.09); border-radius:18px; padding:28px }
   h1{ margin:0 0 4px; font-size:22px }
   p.sub{ margin:0 0 20px; color:#9fb0c7; font-size:14px; line-height:1.6 }
   label{ display:block; font-size:13px; color:#9fb0c7; margin:14px 0 6px }
   input{ width:100%; padding:12px 14px; border-radius:10px; border:1px solid rgba(255,255,255,.12);
-    background:#0d1526; color:#eef2f8; font-size:15px }
-  button{ width:100%; margin-top:14px; padding:14px; border:0; border-radius:12px; font-size:16px; font-weight:700; cursor:pointer }
+    background:#0d1526; color:#eef2f8; font-size:16px }
+  button{ width:100%; margin-top:12px; padding:14px; border:0; border-radius:12px; font-size:16px; font-weight:700; cursor:pointer }
   #join{ background:#00e5cc; color:#063 }
+  #unlock{ background:#ffd24d; color:#3a2c00; display:none }
   #mute{ background:#2a3550; color:#eef2f8; display:none }
   #leave{ background:#ff5d5d; color:#fff; display:none }
+  #copy{ background:#1d2740; color:#cfe; margin-top:8px; padding:10px; font-size:14px }
   .status{ margin-top:18px; padding:14px; border-radius:10px; background:#0d1526; font-size:14px; line-height:1.7 }
   .dot{ display:inline-block; width:9px; height:9px; border-radius:50%; background:#48507a; margin-right:7px; vertical-align:middle }
   .dot.on{ background:#00e5cc; box-shadow:0 0 8px #00e5cc }
@@ -29,6 +34,11 @@
 </style>
 </head>
 <body>
+<div id="banner" class="banner" hidden>
+  ⚠️ このアプリ内ブラウザではマイクが使えないことがあります。<b>Safari / Chrome で開いて</b>ください。
+  <button id="copyTop">🔗 このリンクをコピー</button>
+</div>
+
 <div class="card">
   <h1>🦞 ぱっと通話</h1>
   <p class="sub">同じ部屋名を開いた人どうしが、そのまま音声通話（WebRTC・P2P）。サーバ不要。</p>
@@ -37,13 +47,17 @@
   <input id="room" placeholder="lobby" autocomplete="off">
 
   <button id="join">🎙 参加する</button>
+  <button id="unlock">🔊 音声を有効化（タップ）</button>
   <button id="mute">🔇 ミュート</button>
   <button id="leave">📴 退出</button>
 
   <div class="status">
     <div><span class="dot" id="dot"></span><span id="state">未参加</span></div>
     <div style="margin-top:8px">接続中の相手：<span class="peers" id="count">0</span> 人</div>
-    <div style="margin-top:10px" id="shareWrap" hidden>共有リンク：<br><a class="share" id="share" href="#"></a></div>
+    <div style="margin-top:10px" id="shareWrap" hidden>
+      共有リンク：<br><a class="share" id="share" href="#"></a>
+      <button id="copy">🔗 招待リンクをコピー</button>
+    </div>
   </div>
 </div>
 
@@ -52,54 +66,74 @@
 import {joinRoom} from 'https://esm.sh/trystero/nostr'
 
 const $ = id => document.getElementById(id)
+
+// --- アプリ内ブラウザ検知（マイク不可なことがある） ---
+const ua = navigator.userAgent || ''
+if (/(FBAN|FBAV|Instagram|Line\/|Twitter|MicroMessenger|; wv\))/i.test(ua)) $('banner').hidden = false
+
+// --- リンクコピー ---
+async function copyLink(btn){
+  try { await navigator.clipboard.writeText(location.href); btn.textContent = 'コピーしました ✓' }
+  catch { btn.textContent = '長押しでコピー: ' + location.href }
+}
+$('copyTop').onclick = () => copyLink($('copyTop'))
+$('copy').onclick    = () => copyLink($('copy'))
+
 const roomInput = $('room')
 roomInput.value = decodeURIComponent(location.hash.slice(1)) || ''
 
-let room, myStream, muted = false
+let room, myStream, muted=false, wantWake=false, wakeLock=null
 const peers = new Set()
+const audios = []
 
-const setState = (t, on) => { $('state').textContent = t; $('dot').classList.toggle('on', !!on) }
-const setCount = () => { $('count').textContent = peers.size }
+const setState=(t,on)=>{ $('state').textContent=t; $('dot').classList.toggle('on',!!on) }
+const setCount=()=>{ $('count').textContent=peers.size }
+
+// iOS等で自動再生がブロックされたら「音声を有効化」ボタンを出す
+function playAudio(el){ el.play().catch(()=>{ $('unlock').style.display='block' }) }
+$('unlock').onclick = () => { audios.forEach(a=>a.play().catch(()=>{})); $('unlock').style.display='none' }
+
+// 画面スリープ防止（対応端末のみ・失敗しても無視）
+async function acquireWake(){ try{ wakeLock = await navigator.wakeLock.request('screen') }catch{} }
+document.addEventListener('visibilitychange', () => {
+  if (wantWake && document.visibilityState === 'visible') acquireWake()
+})
 
 $('join').onclick = async () => {
   const roomId = roomInput.value.trim() || 'lobby'
   location.hash = encodeURIComponent(roomId)
-  $('share').textContent = location.href
-  $('share').href = location.href
-  $('shareWrap').hidden = false
+  $('share').textContent = location.href; $('share').href = location.href; $('shareWrap').hidden = false
 
-  try {
-    myStream = await navigator.mediaDevices.getUserMedia({audio:true})
-  } catch (e) {
-    setState('⚠️ マイクの許可が必要です（https/localhostで開いてね）', false); return
-  }
+  try { myStream = await navigator.mediaDevices.getUserMedia({audio:true}) }
+  catch(e){ setState('⚠️ マイク許可が必要（Safari/Chrome・https で開いてね）', false); return }
 
   room = joinRoom({appId:'kuramo-webrtc-call'}, roomId)
   room.addStream(myStream)
   room.onPeerStream(stream => {
     const a = document.createElement('audio')
     a.srcObject = stream; a.autoplay = true; a.playsInline = true
-    document.body.appendChild(a)
+    document.body.appendChild(a); audios.push(a); playAudio(a)
   })
   room.onPeerJoin(id => { peers.add(id); setCount() })
   room.onPeerLeave(id => { peers.delete(id); setCount() })
 
+  wantWake = true; acquireWake()
   setState('参加中：' + roomId, true)
   $('join').style.display='none'; $('mute').style.display='block'; $('leave').style.display='block'
   roomInput.disabled = true
 }
 
 $('mute').onclick = () => {
-  muted = !muted
-  myStream.getAudioTracks().forEach(t => t.enabled = !muted)
+  muted = !muted; myStream.getAudioTracks().forEach(t => t.enabled = !muted)
   $('mute').textContent = muted ? '🔊 ミュート解除' : '🔇 ミュート'
 }
 
 $('leave').onclick = () => {
   if (room) room.leave()
   if (myStream) myStream.getTracks().forEach(t => t.stop())
-  peers.clear(); setCount(); setState('退出しました', false)
-  $('join').style.display='block'; $('mute').style.display='none'; $('leave').style.display='none'
+  wantWake = false; if (wakeLock){ wakeLock.release().catch(()=>{}); wakeLock=null }
+  peers.clear(); setCount(); audios.length = 0; setState('退出しました', false)
+  $('join').style.display='block'; $('mute').style.display='none'; $('leave').style.display='none'; $('unlock').style.display='none'
   roomInput.disabled = false
 }
 </script>
