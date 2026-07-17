@@ -80,11 +80,22 @@ roomInput.value = decodeURIComponent(location.hash.slice(1)) || ''
 let room, myStream, muted = false, wantWake = false, wakeLock = null
 let leaving = null   // 進行中の退出処理（room.leave() は非同期）
 let lastRoom = null  // ゾンビroom検出用（下の「③ 部屋に参加」参照）
+let joinedId = null  // 参加中の部屋名（null＝未参加）
+let warn = ''        // 直近のピア単位エラー（誰とも繋がっていない時だけ表示）
 const peers = new Set()
 const audios = new Map()  // peerId → audio要素[]（相手の退出時に個別破棄する）
 
 const setState = (t, on) => { $('state').textContent = t; $('dot').classList.toggle('on', !!on) }
 const setCount = () => { $('count').textContent = peers.size }
+
+// 表示は「実際に繋がっている人数」から導く。
+// 繋がってさえいれば、幽霊ピアのハンドシェイク失敗などは表に出さない。
+const render = () => {
+  if (!joinedId) return
+  if (peers.size) setState('🟢 通話中：' + joinedId, true)
+  else if (warn) setState('⚠️ ' + warn + '（相手を探しています…）', true)
+  else setState('🟢 参加中：' + joinedId + '（相手を探しています…）', true)
+}
 const play = el => el.play().catch(() => { $('unlock').style.display = 'block' })
 const allAudios = () => [...audios.values()].flat()
 const dropAudios = id => {
@@ -151,9 +162,9 @@ $('join').onclick = async () => {
         { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
       ]
     }, roomId, {
-      // 参加失敗（パスワード不一致・ハンドシェイク失敗・TURNでも直結できない等）は
-      // 例外ではなくここに来る。拾わないと「🟢参加中」のまま黙って繋がらない。
-      onJoinError: d => setState('❌ 参加失敗: ' + (d.error?.message || d.error || '不明'), false)
+      // ピア単位の非致命エラー（幽霊ピアへのハンドシェイク失敗など）。部屋自体は生きていて
+      // 他の相手とは繋がるので、状態は上書きせず render() の判断に委ねる。
+      onJoinError: d => { warn = d.error?.message || String(d.error || '不明'); render() }
     })
 
     // 前回の退出が最後まで完了していないと、joinRoom は新しい部屋を作らず
@@ -172,14 +183,14 @@ $('join').onclick = async () => {
       audios.set(id, [...(audios.get(id) || []), a])
       play(a)
     }
-    room.onPeerJoin = id => { peers.add(id); room.addStream(myStream, { target: id }); setCount() }
-    room.onPeerLeave = id => { peers.delete(id); dropAudios(id); setCount() }
+    room.onPeerJoin = id => { peers.add(id); room.addStream(myStream, { target: id }); warn = ''; setCount(); render() }
+    room.onPeerLeave = id => { peers.delete(id); dropAudios(id); setCount(); render() }
   } catch (e) {
     setState('❌ 接続失敗: ' + (e.message || e), false); return
   }
 
   wantWake = true; wake()
-  setState('🟢 参加中：' + roomId + '（相手を探しています…）', true)
+  joinedId = roomId; warn = ''; render()
   $('join').style.display = 'none'; $('mute').style.display = 'block'; $('leave').style.display = 'block'
   roomInput.disabled = true
 }
@@ -195,6 +206,7 @@ $('leave').onclick = () => {
   ;[...audios.keys()].forEach(dropAudios)
   wantWake = false; if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null }
   peers.clear(); setCount()
+  joinedId = null; warn = ''
   muted = false; $('mute').textContent = '🔇 ミュート'
   setState('退出しました', false)
   $('join').style.display = 'block'; $('mute').style.display = 'none'; $('leave').style.display = 'none'; $('unlock').style.display = 'none'
