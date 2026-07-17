@@ -119,14 +119,16 @@ $('join').onclick = async () => {
     room = joinRoom({
       appId: 'kuramo-webrtc-call',
       // 相手発見を速く・確実に：信頼できるnostrリレーを明示＋多重接続（デフォルトの当たり外れ対策）
-      relayUrls: [
-        'wss://relay.damus.io',
-        'wss://nos.lol',
-        'wss://relay.primal.net',
-        'wss://relay.nostr.band',
-        'wss://offchain.pub'
-      ],
-      relayRedundancy: 5,
+      relayConfig: {
+        urls: [
+          'wss://relay.damus.io',
+          'wss://nos.lol',
+          'wss://relay.primal.net',
+          'wss://relay.nostr.band',
+          'wss://offchain.pub'
+        ],
+        redundancy: 5
+      },
       // NAT越え保険：直接繋がらない回線でも中継で確立（登録不要の公開 Open Relay）
       turnConfig: [
         { urls: 'turn:openrelay.metered.ca:80',                username: 'openrelayproject', credential: 'openrelayproject' },

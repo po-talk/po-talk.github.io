@@ -29,5 +29,8 @@ python3 -m http.server 8000
 - 音声メディアは**ブラウザ間 E2E**（サーバに音は残らない）。シグナリングは Nostr 公開リレー経由。
 
 ## カスタム
-- **シグナリング戦略**：`trystero/nostr` を `torrent` / `mqtt` / `firebase` などに変更可（自前運用にもできる）
-- **TURN 追加**：`joinRoom({appId, rtcConfig:{iceServers:[{urls:'turn:...',username,credential}]}}, room)`
+Trystero 0.25 系で API が変わっているので注意（ネット上の情報の多くは旧API）。
+
+- **シグナリング戦略**：素の `trystero` は **nostr** 戦略（本アプリはこれ）。他の戦略は別パッケージに分離され、`trystero/torrent` のようなサブパス import は**例外になる**。変更するなら `@trystero-p2p/torrent` / `@trystero-p2p/mqtt` などを直接 import する。
+- **リレー指定**：`joinRoom({appId, relayConfig:{urls:['wss://...'], redundancy:5}}, room)`。平坦な `relayUrls` / `relayRedundancy` は**無視される**（エラーも出ずデフォルトにフォールバック）。
+- **TURN 追加**：`joinRoom({appId, turnConfig:[{urls:'turn:...',username,credential}]}, room)`。既定の STUN に**追加**される。既定を使わず全部置き換えたいときだけ `rtcConfig.iceServers` を使う。
