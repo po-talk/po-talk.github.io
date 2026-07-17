@@ -78,14 +78,21 @@ const roomInput = $('room')
 roomInput.value = decodeURIComponent(location.hash.slice(1)) || ''
 
 let room, myStream, muted = false, wantWake = false, wakeLock = null
+let leaving = null   // 進行中の退出処理（room.leave() は非同期）
+let lastRoom = null  // ゾンビroom検出用（下の「③ 部屋に参加」参照）
 const peers = new Set()
-const audios = []
+const audios = new Map()  // peerId → audio要素[]（相手の退出時に個別破棄する）
 
 const setState = (t, on) => { $('state').textContent = t; $('dot').classList.toggle('on', !!on) }
 const setCount = () => { $('count').textContent = peers.size }
 const play = el => el.play().catch(() => { $('unlock').style.display = 'block' })
+const allAudios = () => [...audios.values()].flat()
+const dropAudios = id => {
+  (audios.get(id) || []).forEach(a => { a.srcObject = null; a.remove() })
+  audios.delete(id)
+}
 
-$('unlock').onclick = () => { audios.forEach(a => a.play().catch(() => {})); $('unlock').style.display = 'none' }
+$('unlock').onclick = () => { allAudios().forEach(a => a.play().catch(() => {})); $('unlock').style.display = 'none' }
 
 const wake = async () => { try { wakeLock = await navigator.wakeLock.request('screen') } catch {} }
 document.addEventListener('visibilitychange', () => {
@@ -96,6 +103,14 @@ $('join').onclick = async () => {
   const roomId = roomInput.value.trim() || 'lobby'
   location.hash = encodeURIComponent(roomId)
   $('share').textContent = location.href; $('share').href = location.href; $('shareWrap').hidden = false
+
+  // ⓪ 退出処理の完了待ち
+  // room.leave() は非同期で、最後まで走って初めて部屋の登録が解除される。
+  // 解除前に joinRoom すると「退出済みの死んだroom」が例外なしで返ってくるので、必ず待つ。
+  if (leaving) {
+    setState('⏳ 退出処理の完了を待っています…', false)
+    await leaving
+  }
 
   // ① マイク取得
   setState('① マイクを取得中…（許可を押して）', false)
@@ -135,15 +150,30 @@ $('join').onclick = async () => {
         { urls: 'turn:openrelay.metered.ca:443',               username: 'openrelayproject', credential: 'openrelayproject' },
         { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
       ]
-    }, roomId)
+    }, roomId, {
+      // 参加失敗（パスワード不一致・ハンドシェイク失敗・TURNでも直結できない等）は
+      // 例外ではなくここに来る。拾わないと「🟢参加中」のまま黙って繋がらない。
+      onJoinError: d => setState('❌ 参加失敗: ' + (d.error?.message || d.error || '不明'), false)
+    })
+
+    // 前回の退出が最後まで完了していないと、joinRoom は新しい部屋を作らず
+    // 同じ（死んだ）roomオブジェクトを返す。掴んだままだと永久に繋がらないので弾く。
+    if (room === lastRoom) {
+      room = null
+      setState('❌ 前回の退出処理が完了していません。ページを再読込してください', false); return
+    }
+    lastRoom = room
+
     room.addStream(myStream)
     room.onPeerStream = (stream, id) => {
       const a = document.createElement('audio')
       a.srcObject = stream; a.autoplay = true; a.playsInline = true
-      document.body.appendChild(a); audios.push(a); play(a)
+      document.body.appendChild(a)
+      audios.set(id, [...(audios.get(id) || []), a])
+      play(a)
     }
     room.onPeerJoin = id => { peers.add(id); room.addStream(myStream, { target: id }); setCount() }
-    room.onPeerLeave = id => { peers.delete(id); setCount() }
+    room.onPeerLeave = id => { peers.delete(id); dropAudios(id); setCount() }
   } catch (e) {
     setState('❌ 接続失敗: ' + (e.message || e), false); return
   }
@@ -160,13 +190,19 @@ $('mute').onclick = () => {
 }
 
 $('leave').onclick = () => {
-  if (room) { room.leave(); room = null }
+  const leftRoom = room; room = null
   if (myStream) { myStream.getTracks().forEach(t => t.stop()); myStream = null }
-  audios.forEach(a => { a.srcObject = null; a.remove() }); audios.length = 0
+  ;[...audios.keys()].forEach(dropAudios)
   wantWake = false; if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null }
-  peers.clear(); setCount(); setState('退出しました', false)
+  peers.clear(); setCount()
+  muted = false; $('mute').textContent = '🔇 ミュート'
+  setState('退出しました', false)
   $('join').style.display = 'block'; $('mute').style.display = 'none'; $('leave').style.display = 'none'; $('unlock').style.display = 'none'
   roomInput.disabled = false
+
+  // UIは即座に戻すが、実際の退出は非同期に続く。次の参加はこれの完了を待つ（⓪参照）。
+  // 失敗しても再参加を塞がないよう握りつぶす（掴んだ場合は上のゾンビ検出が拾う）。
+  if (leftRoom) leaving = leftRoom.leave().catch(() => {}).finally(() => { leaving = null })
 }
 </script>
 </body>
