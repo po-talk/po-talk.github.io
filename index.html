@@ -148,8 +148,14 @@ const $ = id => document.getElementById(id)
 if (/(FBAN|FBAV|Instagram|Line\/|Twitter|MicroMessenger|; wv\))/i.test(navigator.userAgent || '')) $('banner').hidden = false
 
 const copyLink = async btn => {
-  try { await navigator.clipboard.writeText(location.href); btn.textContent = 'コピーしました ✓' }
-  catch { btn.textContent = '長押しでコピー: ' + location.href }
+  const original = btn.dataset.label || (btn.dataset.label = btn.textContent)  // 初回の文言を保持
+  try {
+    await navigator.clipboard.writeText(location.href)
+    btn.textContent = 'コピーしました ✓'
+    clearTimeout(btn._revert); btn._revert = setTimeout(() => { btn.textContent = original }, 1600)  // 少し後に元へ
+  } catch {
+    btn.textContent = '長押しでコピー: ' + location.href  // 失敗時はURLを残す（長押しでコピーできるように）
+  }
 }
 $('copyTop').onclick = () => copyLink($('copyTop'))
 $('copy').onclick    = () => copyLink($('copy'))
