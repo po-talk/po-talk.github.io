@@ -87,7 +87,7 @@
   <div id="avatars" class="avatars"></div>
 
   <label for="room">部屋名</label>
-  <input id="room" placeholder="lobby" autocomplete="off">
+  <input id="room" placeholder="◯◯の部屋" autocomplete="off">
 
   <button id="join">🎙 参加する</button>
   <button id="unlock">🔊 音声を有効化（タップ）</button>
@@ -139,7 +139,21 @@ const saveProfile = () => { try { localStorage.setItem(PROFILE_KEY, JSON.stringi
 
 const nameInput = $('name')
 nameInput.value = profile.name
-nameInput.oninput = () => { profile.name = nameInput.value.trim(); saveProfile() }
+
+// 部屋名の初期値：名前を入れると「◯◯の部屋」を自動で入れる。ただし
+// ・共有リンク（#部屋名）がある時はそれを尊重（勝手に上書きしない）
+// ・ユーザーが部屋名を手で変えたら追従をやめる（直近の自動値と一致する間だけ更新）
+let lastAutoRoom = ''
+const defaultRoom = () => profile.name ? profile.name + 'の部屋' : ''
+const applyAutoRoom = () => {
+  if (location.hash) return
+  if (roomInput.value === '' || roomInput.value === lastAutoRoom) {
+    lastAutoRoom = defaultRoom()
+    roomInput.value = lastAutoRoom
+  }
+}
+nameInput.oninput = () => { profile.name = nameInput.value.trim(); saveProfile(); applyAutoRoom() }
+applyAutoRoom()  // 読込時：ハッシュが無ければ保存済みの名前から初期値を作る
 
 const avatarsEl = $('avatars')
 AVATARS.forEach(e => {
