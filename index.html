@@ -31,6 +31,21 @@
   .dot.on{ background:#00e5cc }
   .peers{ font-size:26px; font-weight:800; color:#00e5cc }
   a.share{ color:#00e5cc; word-break:break-all; font-size:13px }
+  /* アバター選択（絵文字）。共通の button{width:100%} を打ち消して小さなチップにする */
+  .avatars{ display:grid; grid-template-columns:repeat(8,1fr); gap:6px; margin-top:6px }
+  .avatar{ width:auto; margin:0; padding:8px 0; font-size:20px; line-height:1;
+    background:#0d1526; border:1px solid rgba(255,255,255,.12); border-radius:10px }
+  .avatar[aria-pressed="true"]{ border-color:#00e5cc; background:#0c2b2a }
+  .avatar:disabled{ opacity:.5; cursor:default }
+  /* 参加者リスト（絵文字＋名前） */
+  .members{ margin-top:12px; display:flex; flex-direction:column; gap:6px }
+  .member{ display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:10px; background:#0d1526;
+    transition:background .12s, box-shadow .12s }
+  .member.speaking{ background:#0c2b2a; box-shadow:0 0 0 1px #00e5cc inset }
+  /* transform は VAD が毎フレーム直接書き換える。中心基準で拡大し、GPUに乗せる */
+  .m-emoji{ font-size:22px; line-height:1; transform-origin:center; will-change:transform }
+  .m-name{ font-size:14px; color:#eef2f8; word-break:break-all }
+  .m-name .you{ color:#9fb0c7; font-size:12px }
 </style>
 </head>
 <body>
@@ -43,6 +58,12 @@
   <h1>🦞 ぽっと通話〈実験版〉</h1>
   <p class="sub">同じ部屋名を開いた人どうしが、そのまま音声通話（WebRTC・P2P）。サーバ不要。</p>
 
+  <label for="name">あなたの名前</label>
+  <input id="name" placeholder="ゲスト" autocomplete="off" maxlength="20">
+
+  <label>アバター</label>
+  <div id="avatars" class="avatars"></div>
+
   <label for="room">部屋名</label>
   <input id="room" placeholder="lobby" autocomplete="off">
 
@@ -54,6 +75,7 @@
   <div class="status">
     <div><span class="dot" id="dot"></span><span id="state">未参加</span></div>
     <div style="margin-top:8px">接続中の相手：<span class="peers" id="count">0</span> 人</div>
+    <div id="members" class="members"></div>
     <div style="margin-top:10px" id="shareWrap" hidden>
       共有リンク：<br><a class="share" id="share" href="#"></a>
       <button id="copy">🔗 招待リンクをコピー</button>
@@ -77,16 +99,116 @@ $('copy').onclick    = () => copyLink($('copy'))
 const roomInput = $('room')
 roomInput.value = decodeURIComponent(location.hash.slice(1)) || ''
 
+// プロフィール（名前・アバター絵文字）— ブラウザに保存し次回も引き継ぐ。
+// いまは自分の設定を保持するだけ。相手への送信・参加者リスト表示は次の段階で足す。
+const AVATARS = ['🦞','🐱','🐶','🦊','🐻','🐼','🐸','🐧','🦉','🐙','🦄','🐝','🌸','⭐','🍎','🎈']
+const PROFILE_KEY = 'pot-call-profile'
+let profile = { name: '', emoji: AVATARS[0] }
+try { profile = { ...profile, ...JSON.parse(localStorage.getItem(PROFILE_KEY) || '{}') } } catch {}
+const saveProfile = () => { try { localStorage.setItem(PROFILE_KEY, JSON.stringify(profile)) } catch {} }
+
+const nameInput = $('name')
+nameInput.value = profile.name
+nameInput.oninput = () => { profile.name = nameInput.value.trim(); saveProfile() }
+
+const avatarsEl = $('avatars')
+AVATARS.forEach(e => {
+  const b = document.createElement('button')
+  b.type = 'button'; b.className = 'avatar'; b.textContent = e
+  b.setAttribute('aria-pressed', String(e === profile.emoji))
+  b.onclick = () => {
+    profile.emoji = e; saveProfile()
+    avatarsEl.querySelectorAll('.avatar').forEach(x => x.setAttribute('aria-pressed', String(x === b)))
+  }
+  avatarsEl.appendChild(b)
+})
+// 参加中はプロフィール変更を止める（roomInput と同様。送信機能を足すまで見た目を実態に合わせる）
+const lockProfile = on => {
+  nameInput.disabled = on
+  avatarsEl.querySelectorAll('.avatar').forEach(b => { b.disabled = on })
+}
+
 let room, myStream, muted = false, wantWake = false, wakeLock = null
 let leaving = null   // 進行中の退出処理（room.leave() は非同期）
 let lastRoom = null  // ゾンビroom検出用（下の「③ 部屋に参加」参照）
 let joinedId = null  // 参加中の部屋名（null＝未参加）
 let warn = ''        // 直近のピア単位エラー（誰とも繋がっていない時だけ表示）
 const peers = new Set()
-const audios = new Map()  // peerId → audio要素[]（相手の退出時に個別破棄する）
+const audios = new Map()   // peerId → audio要素[]（相手の退出時に個別破棄する）
+const profiles = new Map() // peerId → {name, emoji}（相手から届いたプロフィール）
 
 const setState = (t, on) => { $('state').textContent = t; $('dot').classList.toggle('on', !!on) }
 const setCount = () => { $('count').textContent = peers.size }
+
+// 参加者リスト（自分＋接続中の相手）を描く。名前・絵文字は textContent で入れる（受信データは信用しない）。
+const membersEl = $('members')
+const emojiEls = new Map()  // uid('self'|peerId) → 現在の絵文字要素（描き直すたび貼り替え、VADから参照する）
+const memberRow = (emoji, name, you) => {
+  const row = document.createElement('div'); row.className = 'member'
+  const av = document.createElement('span'); av.className = 'm-emoji'; av.textContent = emoji || '🙂'
+  const nm = document.createElement('span'); nm.className = 'm-name'; nm.textContent = name || 'ゲスト'
+  if (you) { const t = document.createElement('span'); t.className = 'you'; t.textContent = '（あなた）'; nm.append(' ', t) }
+  row.append(av, nm); return row
+}
+const renderMembers = () => {
+  membersEl.replaceChildren(); emojiEls.clear()
+  if (!joinedId) return
+  const add = (uid, emoji, name, you) => {
+    const row = memberRow(emoji, name, you)
+    emojiEls.set(uid, row.querySelector('.m-emoji'))
+    membersEl.appendChild(row)
+  }
+  add('self', profile.emoji, profile.name, true)
+  // peers（接続の事実）を軸にし、プロフィール未着の相手は仮表示にする
+  peers.forEach(id => { const p = profiles.get(id) || {}; add(id, p.emoji, p.name) })
+}
+
+// アクティブスピーカー検出（VAD）：各ストリームの音量を測り、話している人の絵文字を跳ねさせる。
+// Analyserは解析専用で出力には繋がない（音は既存の<audio>が鳴らす）。iOSはユーザー操作で
+// AudioContextを起動する必要があるため、生成は参加ボタン押下（=ジェスチャ）の流れの中で行う。
+let audioCtx = null
+const analysers = new Map()  // uid → {analyser, data, src}
+let vadRAF = null
+const ensureAudioCtx = () => {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)()
+  if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {})
+  return audioCtx
+}
+const addAnalyser = (uid, stream) => {
+  try {
+    removeAnalyser(uid)   // 同じ相手のストリーム再取得（再ネゴ）で二重登録・リークしないように
+    const ctx = ensureAudioCtx()
+    const src = ctx.createMediaStreamSource(stream)
+    const analyser = ctx.createAnalyser()
+    analyser.fftSize = 512; analyser.smoothingTimeConstant = 0.6
+    src.connect(analyser)
+    analysers.set(uid, { analyser, data: new Uint8Array(analyser.fftSize), src })
+    if (!vadRAF) vadRAF = requestAnimationFrame(vadTick)
+  } catch {}
+}
+const removeAnalyser = uid => {
+  const a = analysers.get(uid)
+  if (a) { try { a.src.disconnect() } catch {} ; analysers.delete(uid) }
+}
+const stopVad = () => {
+  if (vadRAF) { cancelAnimationFrame(vadRAF); vadRAF = null }
+  analysers.forEach((_, uid) => removeAnalyser(uid))
+  if (audioCtx) { audioCtx.close().catch(() => {}); audioCtx = null }
+}
+const vadTick = () => {
+  analysers.forEach(({ analyser, data }, uid) => {
+    analyser.getByteTimeDomainData(data)
+    let sum = 0
+    for (let i = 0; i < data.length; i++) { const v = (data[i] - 128) / 128; sum += v * v }
+    const rms = Math.sqrt(sum / data.length)
+    const el = emojiEls.get(uid)
+    if (!el) return
+    const active = rms > 0.045    // ノイズ床より上を「話している」とみなすしきい値
+    el.style.transform = active ? 'scale(' + (1 + Math.min((rms - 0.045) * 4, 0.55)).toFixed(3) + ')' : 'scale(1)'
+    el.parentElement.classList.toggle('speaking', active)
+  })
+  vadRAF = analysers.size ? requestAnimationFrame(vadTick) : null
+}
 
 // 表示は「実際に繋がっている人数」から導く。
 // 繋がってさえいれば、幽霊ピアのハンドシェイク失敗などは表に出さない。
@@ -103,7 +225,7 @@ const dropAudios = id => {
   audios.delete(id)
 }
 
-$('unlock').onclick = () => { allAudios().forEach(a => a.play().catch(() => {})); $('unlock').style.display = 'none' }
+$('unlock').onclick = () => { if (audioCtx) audioCtx.resume().catch(() => {}); allAudios().forEach(a => a.play().catch(() => {})); $('unlock').style.display = 'none' }
 
 const wake = async () => { try { wakeLock = await navigator.wakeLock.request('screen') } catch {} }
 document.addEventListener('visibilitychange', () => {
@@ -175,24 +297,36 @@ $('join').onclick = async () => {
     }
     lastRoom = room
 
+    // プロフィール交換：接続が張れた相手に自分の名前・絵文字を送る。相手も同じことをするので、
+    // 双方の onPeerJoin だけで両方向が揃う（通話中は変更をロックしているので再送は不要）。
+    // onMessage は最初のピア接続イベントより前（この同期ブロック内）に必ず代入しておく。
+    const profileAction = room.makeAction('profile')
+    profileAction.onMessage = (data, { peerId }) => {
+      profiles.set(peerId, { name: String(data?.name || '').slice(0, 20), emoji: String(data?.emoji || '🙂').slice(0, 8) })
+      renderMembers()
+    }
+    const sendProfile = id => profileAction.send({ name: profile.name, emoji: profile.emoji }, { target: id }).catch(() => {})
+
     room.addStream(myStream)
     room.onPeerStream = (stream, id) => {
       const a = document.createElement('audio')
       a.srcObject = stream; a.autoplay = true; a.playsInline = true
       document.body.appendChild(a)
       audios.set(id, [...(audios.get(id) || []), a])
+      addAnalyser(id, stream)   // 相手の音量を測って絵文字を跳ねさせる
       play(a)
     }
-    room.onPeerJoin = id => { peers.add(id); room.addStream(myStream, { target: id }); warn = ''; setCount(); render() }
-    room.onPeerLeave = id => { peers.delete(id); dropAudios(id); setCount(); render() }
+    room.onPeerJoin = id => { peers.add(id); room.addStream(myStream, { target: id }); sendProfile(id); warn = ''; setCount(); render(); renderMembers() }
+    room.onPeerLeave = id => { peers.delete(id); profiles.delete(id); dropAudios(id); removeAnalyser(id); setCount(); render(); renderMembers() }
   } catch (e) {
     setState('❌ 接続失敗: ' + (e.message || e), false); return
   }
 
   wantWake = true; wake()
-  joinedId = roomId; warn = ''; render()
+  joinedId = roomId; warn = ''; render(); renderMembers()
+  addAnalyser('self', myStream)   // 自分のマイク音量でも絵文字を跳ねさせる（ミュート中は無反応）
   $('join').style.display = 'none'; $('mute').style.display = 'block'; $('leave').style.display = 'block'
-  roomInput.disabled = true
+  roomInput.disabled = true; lockProfile(true)
 }
 
 $('mute').onclick = () => {
@@ -205,12 +339,13 @@ $('leave').onclick = () => {
   if (myStream) { myStream.getTracks().forEach(t => t.stop()); myStream = null }
   ;[...audios.keys()].forEach(dropAudios)
   wantWake = false; if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null }
-  peers.clear(); setCount()
-  joinedId = null; warn = ''
+  peers.clear(); profiles.clear(); setCount()
+  stopVad()   // 解析ループ停止＋AudioContext破棄（join が確保したものを全て解放）
+  joinedId = null; warn = ''; renderMembers()
   muted = false; $('mute').textContent = '🔇 ミュート'
   setState('退出しました', false)
   $('join').style.display = 'block'; $('mute').style.display = 'none'; $('leave').style.display = 'none'; $('unlock').style.display = 'none'
-  roomInput.disabled = false
+  roomInput.disabled = false; lockProfile(false)
 
   // UIは即座に戻すが、実際の退出は非同期に続く。次の参加はこれの完了を待つ（⓪参照）。
   // 失敗しても再参加を塞がないよう握りつぶす（掴んだ場合は上のゾンビ検出が拾う）。
