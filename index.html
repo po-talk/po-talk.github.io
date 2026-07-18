@@ -49,6 +49,24 @@
   .m-mute{ margin-left:auto; font-size:15px; opacity:.85 }
   .member.muted .m-emoji{ opacity:.45 }
   .member.muted .m-name{ color:#9fb0c7 }
+  /* 2カラム：左＝通話カード／右＝ロビー。狭い画面では縦に積む */
+  .wrap{ width:100%; display:flex; flex-wrap:wrap; gap:18px; align-items:flex-start; justify-content:center }
+  .lobby{ width:100%; max-width:440px; background:rgba(255,255,255,.04);
+    border:1px solid rgba(255,255,255,.09); border-radius:18px; padding:22px }
+  .lobby h2{ margin:0 0 10px; font-size:17px }
+  .lobby-status{ font-size:13px; color:#9fb0c7; margin-bottom:12px }
+  .lobby-note{ margin:12px 0 0; font-size:12px; color:#6f7f96; line-height:1.6 }
+  .lobby-list{ display:flex; flex-direction:column; gap:10px; max-height:56vh; overflow-y:auto }
+  .room{ width:100%; margin:0; padding:12px 14px; text-align:left; font-weight:400; font-size:14px;
+    background:#0d1526; border:1px solid rgba(255,255,255,.09); border-radius:12px }
+  .room:hover{ border-color:#00e5cc }
+  .room.here{ border-color:#00e5cc; background:#0c2b2a }
+  .room-top{ display:flex; align-items:center; gap:8px }
+  .room-name{ font-weight:700; font-size:15px }
+  .room-count{ margin-left:auto; color:#00e5cc; font-weight:700; font-size:13px }
+  .room-people{ margin-top:8px; display:flex; flex-wrap:wrap; gap:6px }
+  .rp{ display:inline-flex; align-items:center; gap:4px; background:#0a1830; padding:3px 9px; border-radius:999px; font-size:13px; color:#cfe0f0 }
+  .rp.mut{ opacity:.5 }
 </style>
 </head>
 <body>
@@ -57,6 +75,7 @@
   <button id="copyTop">🔗 このリンクをコピー</button>
 </div>
 
+<div class="wrap">
 <div class="card">
   <h1>🦞 ぽっと通話〈実験版〉</h1>
   <p class="sub">同じ部屋名を開いた人どうしが、そのまま音声通話（WebRTC・P2P）。サーバ不要。</p>
@@ -84,6 +103,14 @@
       <button id="copy">🔗 招待リンクをコピー</button>
     </div>
   </div>
+</div>
+
+<aside class="lobby">
+  <h2>🟢 通話中の部屋</h2>
+  <div class="lobby-status" id="lobbyStatus">🛰 ロビーに接続中…</div>
+  <div class="lobby-list" id="lobbyList"></div>
+  <p class="lobby-note">部屋をタップすると部屋名にセットされます。「参加する」で入室。</p>
+</aside>
 </div>
 
 <script type="module">
@@ -143,6 +170,29 @@ const profiles = new Map() // peerId → {name, emoji, muted}（相手から届�
 
 // 自分の現在のプロフィール送信データ（名前・絵文字・ミュート状態）
 const myProfilePayload = () => ({ name: profile.name, emoji: profile.emoji, muted })
+
+// Trystero 設定（通話部屋とロビー部屋で共用）。
+const TRYSTERO_CONFIG = {
+  appId: 'kuramo-webrtc-call',
+  // 相手発見を速く・確実に：信頼できるnostrリレーを明示＋多重接続（デフォルトの当たり外れ対策）
+  relayConfig: {
+    urls: ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.primal.net', 'wss://relay.nostr.band', 'wss://offchain.pub'],
+    redundancy: 5
+  },
+  // NAT越え保険：直接繋がらない回線でも中継で確立（登録不要の公開 Open Relay）
+  turnConfig: [
+    { urls: 'turn:openrelay.metered.ca:80',                username: 'openrelayproject', credential: 'openrelayproject' },
+    { urls: 'turn:openrelay.metered.ca:443',               username: 'openrelayproject', credential: 'openrelayproject' },
+    { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
+  ]
+}
+// ライブラリ読込は一度だけ。ロビー（ページ読込時）と参加（ボタン押下時）で共有する。
+// 失敗時はキャッシュを捨てて次回リトライできるようにする（参加フローの段階別エラー表示を壊さない）。
+let trysteroPromise = null
+const loadTrystero = () => {
+  if (!trysteroPromise) trysteroPromise = import('https://esm.sh/trystero@0.25.2?bundle').catch(e => { trysteroPromise = null; throw e })
+  return trysteroPromise
+}
 
 const setState = (t, on) => { $('state').textContent = t; $('dot').classList.toggle('on', !!on) }
 const setCount = () => { $('count').textContent = peers.size }
@@ -266,33 +316,14 @@ $('join').onclick = async () => {
   setState('② 接続ライブラリを読込中…', false)
   let joinRoom
   try {
-    ({ joinRoom } = await import('https://esm.sh/trystero@0.25.2?bundle'))
+    ({ joinRoom } = await loadTrystero())
   } catch (e) {
     setState('❌ ライブラリ読込失敗: ' + (e.message || e), false); return
   }
 
   // ③ 部屋に参加
   try {
-    room = joinRoom({
-      appId: 'kuramo-webrtc-call',
-      // 相手発見を速く・確実に：信頼できるnostrリレーを明示＋多重接続（デフォルトの当たり外れ対策）
-      relayConfig: {
-        urls: [
-          'wss://relay.damus.io',
-          'wss://nos.lol',
-          'wss://relay.primal.net',
-          'wss://relay.nostr.band',
-          'wss://offchain.pub'
-        ],
-        redundancy: 5
-      },
-      // NAT越え保険：直接繋がらない回線でも中継で確立（登録不要の公開 Open Relay）
-      turnConfig: [
-        { urls: 'turn:openrelay.metered.ca:80',                username: 'openrelayproject', credential: 'openrelayproject' },
-        { urls: 'turn:openrelay.metered.ca:443',               username: 'openrelayproject', credential: 'openrelayproject' },
-        { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
-      ]
-    }, roomId, {
+    room = joinRoom(TRYSTERO_CONFIG, roomId, {
       // ピア単位の非致命エラー（幽霊ピアへのハンドシェイク失敗など）。部屋自体は生きていて
       // 他の相手とは繋がるので、状態は上書きせず render() の判断に委ねる。
       onJoinError: d => { warn = d.error?.message || String(d.error || '不明'); render() }
@@ -340,6 +371,8 @@ $('join').onclick = async () => {
   wantWake = true; wake()
   joinedId = roomId; warn = ''; render(); renderMembers()
   addAnalyser('self', myStream)   // 自分のマイク音量でも絵文字を跳ねさせる（ミュート中は無反応）
+  startHeartbeat()                // ロビーへ自分の在室（部屋名・名前・絵文字）を定期発信
+  renderLobby()                   // 自分の部屋を一覧に即反映（here ハイライト）
   $('join').style.display = 'none'; $('mute').style.display = 'block'; $('leave').style.display = 'block'
   roomInput.disabled = true; lockProfile(true)
 }
@@ -348,7 +381,8 @@ $('mute').onclick = () => {
   muted = !muted; myStream.getAudioTracks().forEach(t => t.enabled = !muted)
   $('mute').textContent = muted ? '🔊 ミュート解除' : '🔇 ミュート'
   if (profileAction) profileAction.send(myProfilePayload()).catch(() => {})  // 全員へミュート状態を配信
-  renderMembers()  // 自分の行の 🔇 を即反映
+  sendHeartbeat()  // ロビーの自分にもミュート状態を反映
+  renderMembers(); renderLobby()  // 自分の行／ロビーの 🔇 を即反映
 }
 
 $('leave').onclick = () => {
@@ -357,8 +391,9 @@ $('leave').onclick = () => {
   ;[...audios.keys()].forEach(dropAudios)
   wantWake = false; if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null }
   peers.clear(); profiles.clear(); setCount(); profileAction = null
-  stopVad()   // 解析ループ停止＋AudioContext破棄（join が確保したものを全て解放）
-  joinedId = null; warn = ''; renderMembers()
+  stopVad()        // 解析ループ停止＋AudioContext破棄（join が確保したものを全て解放）
+  stopHeartbeat()  // ロビーへ「退出した」を通知＋定期発信を停止（ロビー部屋自体は閲覧用に残す）
+  joinedId = null; warn = ''; renderMembers(); renderLobby()
   muted = false; $('mute').textContent = '🔇 ミュート'
   setState('退出しました', false)
   $('join').style.display = 'block'; $('mute').style.display = 'none'; $('leave').style.display = 'none'; $('unlock').style.display = 'none'
@@ -368,6 +403,100 @@ $('leave').onclick = () => {
   // 失敗しても再参加を塞がないよう握りつぶす（掴んだ場合は上のゾンビ検出が拾う）。
   if (leftRoom) leaving = leftRoom.leave().catch(() => {}).finally(() => { leaving = null })
 }
+
+// ───────── ロビー（通話中の部屋の死活監視・一覧） ─────────
+// 仕組み：Nostr には部屋一覧APIが無いので、固定の隠し部屋 __lobby__ に全員が入り、
+// 通話中の人だけが自分の在室情報を定期発信する。受信側は部屋ごとに集約し、一定時間
+// 無音になった相手＝落ちたとみなして消す（切断イベントでも即消し）。ロビーは閲覧用に
+// ページ生存中ずっと残す（通話部屋とは別。leave しない）。
+const LOBBY_ROOM = '__lobby__'
+const HEARTBEAT_MS = 5000    // 在室ハートビート間隔
+const STALE_MS = 15000       // これだけ無音なら「落ちた」とみなす
+let lobbyRoom = null, lobbyPresence = null, heartbeatTimer = null
+const presences = new Map()  // 発信者peerId → {room, name, emoji, muted, ts}
+
+const heartbeatPayload = () => joinedId
+  ? { room: joinedId, name: profile.name, emoji: profile.emoji, muted }
+  : { room: null }
+const sendHeartbeat = () => { if (lobbyPresence) lobbyPresence.send(heartbeatPayload()).catch(() => {}) }
+const startHeartbeat = () => { sendHeartbeat(); if (!heartbeatTimer) heartbeatTimer = setInterval(sendHeartbeat, HEARTBEAT_MS) }
+const stopHeartbeat = () => {
+  if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null }
+  if (lobbyPresence) lobbyPresence.send({ room: null }).catch(() => {})  // 「退出した」を明示（joinedId のクリア順に依存しない）
+}
+
+const renderLobby = () => {
+  const list = $('lobbyList'), status = $('lobbyStatus')
+  if (!lobbyRoom) return  // 接続前は初期メッセージのまま
+  // 部屋名 → 参加者[] に集約。自分は自分の発信を受け取らないので、通話中なら合成して足す。
+  const byRoom = new Map()
+  const push = (room, p) => { (byRoom.get(room) || byRoom.set(room, []).get(room)).push(p) }
+  presences.forEach(v => push(v.room, { name: v.name, emoji: v.emoji, muted: v.muted }))
+  if (joinedId) push(joinedId, { name: profile.name, emoji: profile.emoji, muted })
+  list.replaceChildren()
+  const names = [...byRoom.keys()].sort()
+  status.textContent = names.length ? '' : 'いま通話中の部屋はありません'
+  names.forEach(room => {
+    const people = byRoom.get(room)
+    const btn = document.createElement('button'); btn.className = 'room' + (room === joinedId ? ' here' : '')
+    const top = document.createElement('div'); top.className = 'room-top'
+    const nm = document.createElement('span'); nm.className = 'room-name'; nm.textContent = '🏠 ' + room
+    const ct = document.createElement('span'); ct.className = 'room-count'; ct.textContent = people.length + '人'
+    top.append(nm, ct)
+    const ppl = document.createElement('div'); ppl.className = 'room-people'
+    people.forEach(p => {
+      const rp = document.createElement('span'); rp.className = 'rp' + (p.muted ? ' mut' : '')
+      const e = document.createElement('span'); e.textContent = p.emoji || '🙂'
+      const n = document.createElement('span'); n.textContent = (p.name || 'ゲスト') + (p.muted ? ' 🔇' : '')
+      rp.append(e, n); ppl.append(rp)
+    })
+    btn.append(top, ppl)
+    btn.onclick = () => selectRoom(room)
+    list.append(btn)
+  })
+}
+
+// 一覧クリック：部屋名にセットするだけ（参加は「参加する」ボタンを自分で押す）。通話中は無視。
+const selectRoom = room => {
+  if (joinedId) return
+  roomInput.value = room; roomInput.focus()
+  $('join').scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+}
+
+const initLobby = async () => {
+  const status = $('lobbyStatus')
+  let joinRoom
+  try {
+    ({ joinRoom } = await loadTrystero())
+  } catch {
+    status.textContent = '⚠️ ロビーを読み込めませんでした（通話は使えます）'; return
+  }
+  try {
+    lobbyRoom = joinRoom(TRYSTERO_CONFIG, LOBBY_ROOM)
+    lobbyPresence = lobbyRoom.makeAction('presence')
+    lobbyPresence.onMessage = (d, { peerId }) => {
+      if (!d || d.room == null) presences.delete(peerId)
+      else presences.set(peerId, {
+        room: String(d.room).slice(0, 40), name: String(d.name || '').slice(0, 20),
+        emoji: String(d.emoji || '🙂').slice(0, 8), muted: !!d.muted, ts: Date.now()
+      })
+      renderLobby()
+    }
+    // 新しい閲覧者が来たら、自分が通話中なら即座に在室を送って一覧を埋める
+    lobbyRoom.onPeerJoin = () => { if (joinedId) sendHeartbeat() }
+    lobbyRoom.onPeerLeave = peerId => { presences.delete(peerId); renderLobby() }
+    // 取りこぼし対策：一定時間更新の無い相手を掃除
+    setInterval(() => {
+      const cut = Date.now() - STALE_MS; let changed = false
+      presences.forEach((v, k) => { if (v.ts < cut) { presences.delete(k); changed = true } })
+      if (changed) renderLobby()
+    }, HEARTBEAT_MS)
+    renderLobby()
+  } catch {
+    status.textContent = '⚠️ ロビーに接続できませんでした'
+  }
+}
+initLobby()
 </script>
 </body>
 </html>
