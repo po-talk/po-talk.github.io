@@ -109,7 +109,7 @@
   <h2>🟢 通話中の部屋</h2>
   <div class="lobby-status" id="lobbyStatus">🛰 ロビーに接続中…</div>
   <div class="lobby-list" id="lobbyList"></div>
-  <p class="lobby-note">部屋をタップすると部屋名にセットされます。「参加する」で入室。</p>
+  <p class="lobby-note">部屋をタップするとそのまま入室します。通話中は確認のうえ移動します。</p>
 </aside>
 </div>
 
@@ -456,16 +456,19 @@ const renderLobby = () => {
   })
 }
 
-// 一覧クリック：部屋名にセットするだけ（参加は「参加する」ボタンを自分で押す）。
-// 別の部屋をタップしたときに通話中なら、確認のうえ今の部屋を退出してから移す（自室のタップは無視）。
+// 一覧クリック：タップした部屋にそのまま入室する（＝参加ボタンと同じ意味）。
+// フォーカスは当てない（スマホでキーボードが出るのを避ける）。通話中に別部屋をタップしたら
+// 確認のうえ今の部屋を退出してから入り直す（自室のタップは無視）。
 const selectRoom = room => {
   if (room === joinedId) return
   if (joinedId) {
     if (!confirm('参加中の部屋「' + joinedId + '」を退出して「' + room + '」に移りますか？')) return
     $('leave').onclick()   // 今の部屋を退出（非同期の後片付けは leaving が保持し、次の参加で待たれる）
+  } else {
+    if (!confirm('「' + room + '」に参加しますか？')) return   // 未参加時のミスタップ防止
   }
-  roomInput.value = room; roomInput.focus()
-  $('join').scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+  roomInput.value = room
+  $('join').onclick()      // そのまま入室。参加の⓪で leaving を待つので、部屋移動でも取りこぼさない
 }
 
 const initLobby = async () => {
