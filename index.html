@@ -37,6 +37,16 @@
     background:#0d1526; border:1px solid rgba(255,255,255,.12); border-radius:10px }
   .avatar[aria-pressed="true"]{ border-color:#00e5cc; background:#0c2b2a }
   .avatar:disabled{ opacity:.5; cursor:default }
+  /* プロフィール折りたたみ（初回は開く、以降は閉じる） */
+  .profile{ margin-top:4px }
+  .profile > summary{ list-style:none; cursor:pointer; display:flex; align-items:center; gap:10px;
+    padding:12px 14px; border-radius:12px; background:#0d1526; border:1px solid rgba(255,255,255,.12) }
+  .profile > summary::-webkit-details-marker{ display:none }
+  .pf-emoji{ font-size:22px; line-height:1 }
+  .pf-name{ font-weight:700; font-size:15px }
+  .pf-edit{ margin-left:auto; font-size:12px; color:#00e5cc }
+  .pf-edit::after{ content:' ▾' }
+  .profile[open] .pf-edit::after{ content:' ▴' }
   /* 参加者リスト（絵文字＋名前） */
   .members{ margin-top:12px; display:flex; flex-direction:column; gap:6px }
   .member{ display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:10px; background:#0d1526;
@@ -80,11 +90,18 @@
   <h1>🦞 ぽっと通話〈実験版〉</h1>
   <p class="sub">同じ部屋名を開いた人どうしが、そのまま音声通話（WebRTC・P2P）。サーバ不要。</p>
 
-  <label for="name">あなたの名前</label>
-  <input id="name" placeholder="ゲスト" autocomplete="off" maxlength="20">
+  <details id="profileBox" class="profile">
+    <summary>
+      <span class="pf-emoji" id="pfEmoji">🦞</span>
+      <span class="pf-name" id="pfName">名前・アバターを設定</span>
+      <span class="pf-edit">変更</span>
+    </summary>
+    <label for="name">あなたの名前</label>
+    <input id="name" placeholder="ゲスト" autocomplete="off" maxlength="20">
 
-  <label>アバター</label>
-  <div id="avatars" class="avatars"></div>
+    <label>アバター</label>
+    <div id="avatars" class="avatars"></div>
+  </details>
 
   <label for="room">部屋名</label>
   <input id="room" placeholder="◯◯の部屋" autocomplete="off">
@@ -131,11 +148,19 @@ roomInput.value = decodeURIComponent(location.hash.slice(1)) || ''
 
 // プロフィール（名前・アバター絵文字）— ブラウザに保存し次回も引き継ぐ。
 // いまは自分の設定を保持するだけ。相手への送信・参加者リスト表示は次の段階で足す。
-const AVATARS = ['🦞','🐱','🐶','🦊','🐻','🐼','🐸','🐧','🦉','🐙','🦄','🐝','🌸','⭐','🍎','🎈']
+const AVATARS = ['🦞','🐱','🐶','🦊','🐻','🐼','🐸','🐧','🦉','🐙','🦄','🐝','🌸','⭐','🍎','🍣']
 const PROFILE_KEY = 'pot-call-profile'
+let savedRaw = null
+try { savedRaw = localStorage.getItem(PROFILE_KEY) } catch {}
 let profile = { name: '', emoji: AVATARS[0] }
-try { profile = { ...profile, ...JSON.parse(localStorage.getItem(PROFILE_KEY) || '{}') } } catch {}
+try { if (savedRaw) profile = { ...profile, ...JSON.parse(savedRaw) } } catch {}
 const saveProfile = () => { try { localStorage.setItem(PROFILE_KEY, JSON.stringify(profile)) } catch {} }
+
+// 折りたたみヘッダに現在の絵文字＋名前を映す（閉じていても誰か分かるように）
+const renderProfileSummary = () => {
+  $('pfEmoji').textContent = profile.emoji || '🙂'
+  $('pfName').textContent = profile.name || '名前・アバターを設定'
+}
 
 const nameInput = $('name')
 nameInput.value = profile.name
@@ -152,7 +177,7 @@ const applyAutoRoom = () => {
     roomInput.value = lastAutoRoom
   }
 }
-nameInput.oninput = () => { profile.name = nameInput.value.trim(); saveProfile(); applyAutoRoom() }
+nameInput.oninput = () => { profile.name = nameInput.value.trim(); saveProfile(); applyAutoRoom(); renderProfileSummary() }
 applyAutoRoom()  // 読込時：ハッシュが無ければ保存済みの名前から初期値を作る
 
 const avatarsEl = $('avatars')
@@ -163,9 +188,14 @@ AVATARS.forEach(e => {
   b.onclick = () => {
     profile.emoji = e; saveProfile()
     avatarsEl.querySelectorAll('.avatar').forEach(x => x.setAttribute('aria-pressed', String(x === b)))
+    renderProfileSummary()
   }
   avatarsEl.appendChild(b)
 })
+
+// 初回（保存データなし）は開いた状態、以降は閉じた状態を初期値にする
+$('profileBox').open = !savedRaw
+renderProfileSummary()
 // 参加中はプロフィール変更を止める（roomInput と同様。送信機能を足すまで見た目を実態に合わせる）
 const lockProfile = on => {
   nameInput.disabled = on
