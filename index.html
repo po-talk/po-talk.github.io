@@ -25,6 +25,9 @@
   #unlock{ background:#ffd24d; color:#3a2c00; display:none }
   #mute{ background:#2a3550; color:#eef2f8; display:none }
   #leave{ background:#ff5d5d; color:#fff; display:none }
+  /* 参加後の操作は横並び（ミュート／退出を半々に） */
+  .actions{ display:flex; gap:12px }
+  .actions button{ flex:1; width:auto }
   #copy{ background:#1d2740; color:#cfe; margin-top:8px; padding:10px; font-size:14px }
   .status{ margin-top:18px; padding:14px; border-radius:10px; background:#0d1526; font-size:14px; line-height:1.7 }
   .dot{ display:inline-block; width:9px; height:9px; border-radius:50%; background:#48507a; margin-right:7px; vertical-align:middle }
@@ -45,8 +48,14 @@
   .pf-emoji{ font-size:22px; line-height:1 }
   .pf-name{ font-weight:700; font-size:15px }
   .pf-edit{ margin-left:auto; font-size:12px; color:#00e5cc }
-  .pf-edit::after{ content:' ▾' }
-  .profile[open] .pf-edit::after{ content:' ▴' }
+  .pf-open-label{ display:none; font-size:13px; color:#9fb0c7 }
+  /* 開いている間は summary を「あなたの名前」ラベル行に変身させ、右端に「閉じる」を置く。
+     枠（背景・境界線）は外し、他のラベルと同じ余白で入力欄に繋げる（独立行を作らず一体化） */
+  .profile[open] .pf-emoji, .profile[open] .pf-name{ display:none }
+  .profile[open] .pf-open-label{ display:inline }
+  .profile[open] > summary{ background:none; border:0; padding:14px 2px 6px }
+  /* 通話中はプロフィール変更不可：summary をグレーアウトして開閉も止める */
+  .profile.locked > summary{ opacity:.5; pointer-events:none }
   /* 参加者リスト（絵文字＋名前） */
   .members{ margin-top:12px; display:flex; flex-direction:column; gap:6px }
   .member{ display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:10px; background:#0d1526;
@@ -94,10 +103,10 @@
     <summary>
       <span class="pf-emoji" id="pfEmoji">🦞</span>
       <span class="pf-name" id="pfName">名前・アバターを設定</span>
-      <span class="pf-edit">変更</span>
+      <span class="pf-open-label">あなたの名前</span>
+      <span class="pf-edit" id="pfEdit">変更 ▾</span>
     </summary>
-    <label for="name">あなたの名前</label>
-    <input id="name" placeholder="ゲスト" autocomplete="off" maxlength="20">
+    <input id="name" placeholder="ゲスト" autocomplete="off" maxlength="20" aria-label="あなたの名前">
 
     <label>アバター</label>
     <div id="avatars" class="avatars"></div>
@@ -108,8 +117,10 @@
 
   <button id="join">🎙 参加する</button>
   <button id="unlock">🔊 音声を有効化（タップ）</button>
-  <button id="mute">🔇 ミュート</button>
-  <button id="leave">📴 退出</button>
+  <div class="actions">
+    <button id="mute">🔇 ミュート</button>
+    <button id="leave">📴 退出</button>
+  </div>
 
   <div class="status">
     <div><span class="dot" id="dot"></span><span id="state">未参加</span></div>
@@ -194,12 +205,18 @@ AVATARS.forEach(e => {
 })
 
 // 初回（保存データなし）は開いた状態、以降は閉じた状態を初期値にする
-$('profileBox').open = !savedRaw
+const profileBox = $('profileBox')
+profileBox.open = !savedRaw
+const syncToggleLabel = () => { $('pfEdit').textContent = profileBox.open ? '閉じる ▴' : '変更 ▾' }
+profileBox.addEventListener('toggle', syncToggleLabel)  // 開閉に追従して文言を切り替え
+syncToggleLabel()
 renderProfileSummary()
 // 参加中はプロフィール変更を止める（roomInput と同様。送信機能を足すまで見た目を実態に合わせる）
 const lockProfile = on => {
   nameInput.disabled = on
   avatarsEl.querySelectorAll('.avatar').forEach(b => { b.disabled = on })
+  if (on) profileBox.open = false               // 通話中は畳む
+  profileBox.classList.toggle('locked', on)     // 「変更」トグルもグレーアウト＋操作不可に
 }
 
 let room, myStream, muted = false, wantWake = false, wakeLock = null
