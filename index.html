@@ -46,6 +46,9 @@
   .m-emoji{ font-size:22px; line-height:1; transform-origin:center; will-change:transform }
   .m-name{ font-size:14px; color:#eef2f8; word-break:break-all }
   .m-name .you{ color:#9fb0c7; font-size:12px }
+  .m-mute{ margin-left:auto; font-size:15px; opacity:.85 }
+  .member.muted .m-emoji{ opacity:.45 }
+  .member.muted .m-name{ color:#9fb0c7 }
 </style>
 </head>
 <body>
@@ -133,9 +136,13 @@ let leaving = null   // 進行中の退出処理（room.leave() は非同期）
 let lastRoom = null  // ゾンビroom検出用（下の「③ 部屋に参加」参照）
 let joinedId = null  // 参加中の部屋名（null＝未参加）
 let warn = ''        // 直近のピア単位エラー（誰とも繋がっていない時だけ表示）
+let profileAction = null   // 参加中だけ有効。ミュート状態の配信にも使う（#mute ハンドラ参照）
 const peers = new Set()
 const audios = new Map()   // peerId → audio要素[]（相手の退出時に個別破棄する）
-const profiles = new Map() // peerId → {name, emoji}（相手から届いたプロフィール）
+const profiles = new Map() // peerId → {name, emoji, muted}（相手から届いたプロフィール）
+
+// 自分の現在のプロフィール送信データ（名前・絵文字・ミュート状態）
+const myProfilePayload = () => ({ name: profile.name, emoji: profile.emoji, muted })
 
 const setState = (t, on) => { $('state').textContent = t; $('dot').classList.toggle('on', !!on) }
 const setCount = () => { $('count').textContent = peers.size }
@@ -143,24 +150,26 @@ const setCount = () => { $('count').textContent = peers.size }
 // 参加者リスト（自分＋接続中の相手）を描く。名前・絵文字は textContent で入れる（受信データは信用しない）。
 const membersEl = $('members')
 const emojiEls = new Map()  // uid('self'|peerId) → 現在の絵文字要素（描き直すたび貼り替え、VADから参照する）
-const memberRow = (emoji, name, you) => {
-  const row = document.createElement('div'); row.className = 'member'
+const memberRow = (emoji, name, you, isMuted) => {
+  const row = document.createElement('div'); row.className = 'member' + (isMuted ? ' muted' : '')
   const av = document.createElement('span'); av.className = 'm-emoji'; av.textContent = emoji || '🙂'
   const nm = document.createElement('span'); nm.className = 'm-name'; nm.textContent = name || 'ゲスト'
   if (you) { const t = document.createElement('span'); t.className = 'you'; t.textContent = '（あなた）'; nm.append(' ', t) }
-  row.append(av, nm); return row
+  row.append(av, nm)
+  if (isMuted) { const m = document.createElement('span'); m.className = 'm-mute'; m.textContent = '🔇'; m.title = 'ミュート中'; row.append(m) }
+  return row
 }
 const renderMembers = () => {
   membersEl.replaceChildren(); emojiEls.clear()
   if (!joinedId) return
-  const add = (uid, emoji, name, you) => {
-    const row = memberRow(emoji, name, you)
+  const add = (uid, emoji, name, you, isMuted) => {
+    const row = memberRow(emoji, name, you, isMuted)
     emojiEls.set(uid, row.querySelector('.m-emoji'))
     membersEl.appendChild(row)
   }
-  add('self', profile.emoji, profile.name, true)
+  add('self', profile.emoji, profile.name, true, muted)
   // peers（接続の事実）を軸にし、プロフィール未着の相手は仮表示にする
-  peers.forEach(id => { const p = profiles.get(id) || {}; add(id, p.emoji, p.name) })
+  peers.forEach(id => { const p = profiles.get(id) || {}; add(id, p.emoji, p.name, false, !!p.muted) })
 }
 
 // アクティブスピーカー検出（VAD）：各ストリームの音量を測り、話している人の絵文字を跳ねさせる。
@@ -297,15 +306,21 @@ $('join').onclick = async () => {
     }
     lastRoom = room
 
-    // プロフィール交換：接続が張れた相手に自分の名前・絵文字を送る。相手も同じことをするので、
-    // 双方の onPeerJoin だけで両方向が揃う（通話中は変更をロックしているので再送は不要）。
+    // プロフィール交換：接続が張れた相手に自分の名前・絵文字・ミュート状態を送る。相手も同じことを
+    // するので、双方の onPeerJoin だけで両方向が揃う。名前・絵文字は通話中不変だが、muted は変わるので
+    // ミュート切替時に同じペイロードを再送する（下の #mute ハンドラ）。
     // onMessage は最初のピア接続イベントより前（この同期ブロック内）に必ず代入しておく。
-    const profileAction = room.makeAction('profile')
+    profileAction = room.makeAction('profile')
     profileAction.onMessage = (data, { peerId }) => {
-      profiles.set(peerId, { name: String(data?.name || '').slice(0, 20), emoji: String(data?.emoji || '🙂').slice(0, 8) })
+      const prev = profiles.get(peerId) || {}
+      profiles.set(peerId, {
+        name: String(data?.name ?? prev.name ?? '').slice(0, 20),
+        emoji: String(data?.emoji ?? prev.emoji ?? '🙂').slice(0, 8),
+        muted: !!data?.muted
+      })
       renderMembers()
     }
-    const sendProfile = id => profileAction.send({ name: profile.name, emoji: profile.emoji }, { target: id }).catch(() => {})
+    const sendProfile = id => profileAction.send(myProfilePayload(), { target: id }).catch(() => {})
 
     room.addStream(myStream)
     room.onPeerStream = (stream, id) => {
@@ -332,6 +347,8 @@ $('join').onclick = async () => {
 $('mute').onclick = () => {
   muted = !muted; myStream.getAudioTracks().forEach(t => t.enabled = !muted)
   $('mute').textContent = muted ? '🔊 ミュート解除' : '🔇 ミュート'
+  if (profileAction) profileAction.send(myProfilePayload()).catch(() => {})  // 全員へミュート状態を配信
+  renderMembers()  // 自分の行の 🔇 を即反映
 }
 
 $('leave').onclick = () => {
@@ -339,7 +356,7 @@ $('leave').onclick = () => {
   if (myStream) { myStream.getTracks().forEach(t => t.stop()); myStream = null }
   ;[...audios.keys()].forEach(dropAudios)
   wantWake = false; if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null }
-  peers.clear(); profiles.clear(); setCount()
+  peers.clear(); profiles.clear(); setCount(); profileAction = null
   stopVad()   // 解析ループ停止＋AudioContext破棄（join が確保したものを全て解放）
   joinedId = null; warn = ''; renderMembers()
   muted = false; $('mute').textContent = '🔇 ミュート'
