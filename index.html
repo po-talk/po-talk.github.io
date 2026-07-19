@@ -315,9 +315,11 @@ const saveStats = () => { try { localStorage.setItem(STATS_KEY, JSON.stringify(s
 const localDay = () => { const d = new Date(); return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate() }
 const stageOf = () => {
   const min = stats.seconds / 60
-  if (stats.days >= 14 && min >= 120 && stats.joins >= 14) return (min / stats.joins) < 12 ? '🌲' : '🌳'  // 短め多め→針葉樹／長めときどき→広葉樹
-  if (stats.joins >= 5 && min >= 30) return '🌷'
-  if (stats.joins >= 2) return '🌿'
+  const avg = stats.joins ? min / stats.joins : 0
+  // 🌷 から上は「使った日数」ゲートを効かせ、1日で稼いでも届かないようにする（ゆっくり育つ）
+  if (stats.days >= 14 && min >= 180 && stats.joins >= 20) return avg < 12 ? '🌲' : '🌳'  // 短め多め→針葉樹／長めときどき→広葉樹
+  if (stats.days >= 4  && min >= 60  && stats.joins >= 10) return '🌷'
+  if (stats.joins >= 3 && min >= 5) return '🌿'   // 最初の1段だけは初日でも反応（ごほうび）
   return '🌱'
 }
 const STAGE_NOTE = { '🌱': '🌱（←話して育てよう）', '🌿': '🌿（すくすく）', '🌷': '🌷（花がさいた）', '🌲': '🌲（りっぱな針葉樹！）', '🌳': '🌳（りっぱな広葉樹！）' }
