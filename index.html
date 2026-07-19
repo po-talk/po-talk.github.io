@@ -32,11 +32,15 @@
   .help-hide{ display:flex; align-items:center; gap:8px; margin:0 0 16px; font-size:13px; color:#9fb0c7; cursor:pointer }
   .help-hide input{ width:auto; margin:0; padding:0; accent-color:#00e5cc }
   .help-close{ width:100%; margin:0; padding:12px; background:#2a3550; color:#eef2f8; border-radius:10px; font-weight:700 }
-  /* QRコード表示（白背景でスキャンしやすく） */
-  .qr-box{ background:#fff; border-radius:12px; padding:14px; display:flex; justify-content:center; align-items:center;
-    min-height:120px; margin:0 0 12px; color:#333; font-size:13px }
-  .qr-box svg{ width:min(64vw,240px); height:auto; display:block }
-  .qr-cap{ margin:0 0 16px; font-size:11px; color:#9fb0c7; text-align:center; word-break:break-all; line-height:1.6 }
+  /* 共有アクション：コピーとQRを横並び */
+  .share-actions{ display:flex; gap:8px }
+  .share-actions button{ flex:1; width:auto }
+  /* QRコード（参加者リストの下・共有リンクの上にトグル表示）。白背景でスキャンしやすく */
+  .qr-inline{ margin:0 0 12px }
+  .qr-img{ background:#fff; border-radius:12px; padding:14px; display:flex; justify-content:center; align-items:center;
+    min-height:120px; color:#333; font-size:13px }
+  .qr-img svg{ width:min(60vw,200px); height:auto; display:block }
+  .qr-room{ margin-top:8px; text-align:center; font-size:13px; color:#cfe0f0; word-break:break-all }
   label{ display:block; font-size:13px; color:#9fb0c7; margin:14px 0 6px }
   input{ width:100%; padding:12px 14px; border-radius:10px; border:1px solid rgba(255,255,255,.12);
     background:#0d1526; color:#eef2f8; font-size:16px }
@@ -153,9 +157,15 @@
     <div style="margin-top:8px">接続中の相手：<span class="peers" id="count">0</span> 人</div>
     <div id="members" class="members"></div>
     <div style="margin-top:10px" id="shareWrap" hidden>
+      <div id="qrBox" class="qr-inline" hidden>
+        <div id="qrImg" class="qr-img">生成中…</div>
+        <div id="qrRoom" class="qr-room"></div>
+      </div>
       共有リンク：<br><a class="share" id="share" href="#"></a>
-      <button id="copy">🔗 招待リンクをコピー</button>
-      <button id="qr">📱 QRコードを表示</button>
+      <div class="share-actions">
+        <button id="copy">🔗 招待リンクをコピー</button>
+        <button id="qr" aria-expanded="false">📱 QRコード</button>
+      </div>
     </div>
   </div>
 </div>
@@ -179,13 +189,6 @@
   <button id="helpClose" class="help-close" type="button">閉じる</button>
 </dialog>
 
-<dialog id="qrDialog" class="help-dialog">
-  <h2>📱 QRコードで参加</h2>
-  <div id="qrBox" class="qr-box">生成中…</div>
-  <p id="qrCap" class="qr-cap"></p>
-  <button id="qrClose" class="help-close" type="button">閉じる</button>
-</dialog>
-
 <script type="module">
 const $ = id => document.getElementById(id)
 
@@ -205,23 +208,25 @@ try { helpHide.checked = localStorage.getItem(HELP_HIDE_KEY) === '1' } catch {}
 helpHide.onchange = () => { try { localStorage.setItem(HELP_HIDE_KEY, helpHide.checked ? '1' : '') } catch {} }
 try { if (localStorage.getItem(HELP_HIDE_KEY) !== '1') helpDialog.showModal() } catch {}
 
-// 招待リンクのQRコード。ライブラリは必要時だけ esm.sh から読み込み（クライアント生成＝リンクを外部に送らない）。
-let qrLib = null
+// 招待リンクのQRコード（参加中ボード内にトグル表示）。ライブラリは必要時だけ esm.sh から
+// 読み込み、生成はクライアント側＝リンクを外部に送らない。
+let qrLib = null, qrShown = false
 const loadQR = () => (qrLib ??= import('https://esm.sh/qrcode-generator@1.4.4').then(m => m.default || m).catch(e => { qrLib = null; throw e }))
-const qrDialog = $('qrDialog')
+const resetQr = () => { qrShown = false; $('qrBox').hidden = true; $('qr').setAttribute('aria-expanded', 'false'); $('qrImg').textContent = ''; $('qrRoom').textContent = '' }
 $('qr').onclick = async () => {
-  const box = $('qrBox'), cap = $('qrCap')
-  box.textContent = '生成中…'; cap.textContent = ''
-  qrDialog.showModal()
+  qrShown = !qrShown
+  $('qrBox').hidden = !qrShown
+  $('qr').setAttribute('aria-expanded', String(qrShown))
+  if (!qrShown) return
+  const img = $('qrImg')
+  img.textContent = '生成中…'
+  $('qrRoom').textContent = joinedId ? '部屋：' + joinedId : ''
   try {
     const qrcode = await loadQR()
     const qr = qrcode(0, 'M'); qr.addData(location.href); qr.make()
-    box.innerHTML = qr.createSvgTag({ cellSize: 6, margin: 2, scalable: true })
-    cap.textContent = location.href
-  } catch { box.textContent = '❌ QRの生成に失敗しました' }
+    img.innerHTML = qr.createSvgTag({ cellSize: 6, margin: 2, scalable: true })
+  } catch { img.textContent = '❌ QRの生成に失敗しました' }
 }
-$('qrClose').onclick = () => qrDialog.close()
-qrDialog.addEventListener('click', e => { if (e.target === qrDialog) qrDialog.close() })  // 背景クリックで閉じる
 
 const copyLink = async btn => {
   const original = btn.dataset.label || (btn.dataset.label = btn.textContent)  // 初回の文言を保持
@@ -538,6 +543,7 @@ $('leave').onclick = () => {
   stopHeartbeat()  // ロビーへ「退出した」を通知＋定期発信を停止（ロビー部屋自体は閲覧用に残す）
   joinedId = null; warn = ''; renderMembers(); renderLobby()
   muted = false; $('mute').textContent = '🔇 ミュート'
+  resetQr()   // QRトグルを畳んでおく（次の参加で古いリンクを残さない）
   setState('退出しました', false)
   $('join').style.display = 'block'; $('mute').style.display = 'none'; $('leave').style.display = 'none'; $('unlock').style.display = 'none'
   roomInput.disabled = false; lockProfile(false)
