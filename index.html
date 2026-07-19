@@ -20,6 +20,18 @@
     border:1px solid rgba(255,255,255,.09); border-radius:18px; padding:28px }
   h1{ margin:0 0 4px; font-size:22px }
   p.sub{ margin:0 0 20px; color:#9fb0c7; font-size:14px; line-height:1.6 }
+  .head-row{ display:flex; align-items:flex-start; justify-content:space-between; gap:10px }
+  .help-btn{ flex:none; width:auto; margin:2px 0 0; padding:6px 12px; font-size:12px; font-weight:700;
+    background:#1d2740; color:#cfe; border-radius:999px }
+  /* ヘルプはモーダル（<dialog>）。背景を半透明で覆い、中央にポップアップ */
+  .help-dialog{ border:0; border-radius:16px; padding:24px; width:calc(100% - 40px); max-width:360px;
+    background:#111a2e; color:#eef2f8; box-shadow:0 24px 70px rgba(0,0,0,.55) }
+  .help-dialog::backdrop{ background:rgba(5,8,15,.62); backdrop-filter:blur(2px) }
+  .help-dialog h2{ margin:0 0 12px; font-size:18px }
+  .help-dialog p{ margin:0 0 18px; font-size:14px; color:#cfe0f0; line-height:1.8 }
+  .help-hide{ display:flex; align-items:center; gap:8px; margin:0 0 16px; font-size:13px; color:#9fb0c7; cursor:pointer }
+  .help-hide input{ width:auto; margin:0; padding:0; accent-color:#00e5cc }
+  .help-close{ width:100%; margin:0; padding:12px; background:#2a3550; color:#eef2f8; border-radius:10px; font-weight:700 }
   label{ display:block; font-size:13px; color:#9fb0c7; margin:14px 0 6px }
   input{ width:100%; padding:12px 14px; border-radius:10px; border:1px solid rgba(255,255,255,.12);
     background:#0d1526; color:#eef2f8; font-size:16px }
@@ -101,7 +113,10 @@
 
 <div class="wrap">
 <div class="card">
-  <h1>🦞 ぽっと通話〈実験版〉</h1>
+  <div class="head-row">
+    <h1>🦞 ぽっと通話〈実験版〉</h1>
+    <button id="help" class="help-btn" type="button" aria-haspopup="dialog">これはなに？</button>
+  </div>
   <p class="sub">同じ部屋名を開いた人どうしが、そのまま音声通話（WebRTC・P2P）。サーバ不要。</p>
 
   <details id="profileBox" class="profile">
@@ -150,11 +165,31 @@
   このサイトはアクセス測定に <a href="https://www.cloudflare.com/web-analytics/" target="_blank" rel="noopener">Cloudflare Web Analytics</a> を利用しています（Cookie不使用・個人を特定する情報は取得しません）。
 </footer>
 
+<dialog id="helpDialog" class="help-dialog">
+  <h2>🦞 これはなに？</h2>
+  <p>実験中です。自己責任で。</p>
+  <label class="help-hide"><input type="checkbox" id="helpHide"> 今後表示しない</label>
+  <button id="helpClose" class="help-close" type="button">閉じる</button>
+</dialog>
+
 <script type="module">
 const $ = id => document.getElementById(id)
 
 // アプリ内ブラウザ検知（マイク不可なことがある）
 if (/(FBAN|FBAV|Instagram|Line\/|Twitter|MicroMessenger|; wv\))/i.test(navigator.userAgent || '')) $('banner').hidden = false
+
+// 「これはなに？」ヘルプ（モーダル）。ESCは <dialog> が標準対応。
+const helpDialog = $('helpDialog')
+$('help').onclick = () => helpDialog.showModal()
+$('helpClose').onclick = () => helpDialog.close()
+helpDialog.addEventListener('click', e => { if (e.target === helpDialog) helpDialog.close() })  // 背景クリックで閉じる
+
+// 「今後表示しない」設定（localStorage）。オプトアウトしていなければアクセス時に自動で開く。
+const HELP_HIDE_KEY = 'pot-call-hide-help'
+const helpHide = $('helpHide')
+try { helpHide.checked = localStorage.getItem(HELP_HIDE_KEY) === '1' } catch {}
+helpHide.onchange = () => { try { localStorage.setItem(HELP_HIDE_KEY, helpHide.checked ? '1' : '') } catch {} }
+try { if (localStorage.getItem(HELP_HIDE_KEY) !== '1') helpDialog.showModal() } catch {}
 
 const copyLink = async btn => {
   const original = btn.dataset.label || (btn.dataset.label = btn.textContent)  // 初回の文言を保持
