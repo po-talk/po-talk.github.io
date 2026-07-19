@@ -114,6 +114,8 @@
   .room-people{ margin-top:8px; display:flex; flex-wrap:wrap; gap:6px }
   .rp{ display:inline-flex; align-items:center; gap:4px; background:#0a1830; padding:3px 9px; border-radius:999px; font-size:13px; color:#cfe0f0 }
   .rp.mut{ opacity:.5 }
+  /* 成長（ブラウザを育てる遊び）の自分向け表示 */
+  .grow-note{ margin-top:14px; font-size:13px; color:#9fb0c7 }
 </style>
 </head>
 <body>
@@ -141,6 +143,8 @@
 
     <label>アバター</label>
     <div id="avatars" class="avatars"></div>
+
+    <div class="grow-note" id="growNote"></div>
   </details>
 
   <label for="room">部屋名</label>
@@ -299,6 +303,26 @@ const syncToggleLabel = () => { $('pfEdit').textContent = profileBox.open ? '閉
 profileBox.addEventListener('toggle', syncToggleLabel)  // 開閉に追従して文言を切り替え
 syncToggleLabel()
 renderProfileSummary()
+
+// 成長（ブラウザを育てる遊び）。累積を localStorage に貯め、段階の絵文字を出す。数字は見せない。
+// ・seconds：通話中30秒ごとに加算  ・joins：参加回数（サイクル）  ・days：使った日数（別々の日）
+// 木（🌲🌳）は日数ゲートで「だいたい2週間＋十分な累積」が必要。分岐は1回あたりの平均通話時間。
+const STATS_KEY = 'pot-call-stats'
+let growTimer = null
+let stats = { seconds: 0, joins: 0, days: 0, lastDay: '' }
+try { stats = { ...stats, ...JSON.parse(localStorage.getItem(STATS_KEY) || '{}') } } catch {}
+const saveStats = () => { try { localStorage.setItem(STATS_KEY, JSON.stringify(stats)) } catch {} }
+const localDay = () => { const d = new Date(); return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate() }
+const stageOf = () => {
+  const min = stats.seconds / 60
+  if (stats.days >= 14 && min >= 120 && stats.joins >= 14) return (min / stats.joins) < 12 ? '🌲' : '🌳'  // 短め多め→針葉樹／長めときどき→広葉樹
+  if (stats.joins >= 5 && min >= 30) return '🌷'
+  if (stats.joins >= 2) return '🌿'
+  return '🌱'
+}
+const STAGE_NOTE = { '🌱': '🌱（←話して育てよう）', '🌿': '🌿（すくすく）', '🌷': '🌷（花がさいた）', '🌲': '🌲（りっぱな針葉樹！）', '🌳': '🌳（りっぱな広葉樹！）' }
+const renderGrow = () => { $('growNote').textContent = STAGE_NOTE[stageOf()] }
+renderGrow()
 // 参加中はプロフィール変更を止める（roomInput と同様。送信機能を足すまで見た目を実態に合わせる）
 const lockProfile = on => {
   nameInput.disabled = on
@@ -317,8 +341,8 @@ const peers = new Set()
 const audios = new Map()   // peerId → audio要素[]（相手の退出時に個別破棄する）
 const profiles = new Map() // peerId → {name, emoji, muted}（相手から届いたプロフィール）
 
-// 自分の現在のプロフィール送信データ（名前・絵文字・ミュート状態）
-const myProfilePayload = () => ({ name: profile.name, emoji: profile.emoji, muted })
+// 自分の現在のプロフィール送信データ（名前・絵文字・ミュート状態・成長段階）
+const myProfilePayload = () => ({ name: profile.name, emoji: profile.emoji, muted, stage: stageOf() })
 
 // Trystero 設定（通話部屋とロビー部屋で共用）。
 const TRYSTERO_CONFIG = {
@@ -349,10 +373,11 @@ const setCount = () => { $('count').textContent = peers.size }
 // 参加者リスト（自分＋接続中の相手）を描く。名前・絵文字は textContent で入れる（受信データは信用しない）。
 const membersEl = $('members')
 const emojiEls = new Map()  // uid('self'|peerId) → 現在の絵文字要素（描き直すたび貼り替え、VADから参照する）
-const memberRow = (emoji, name, you, isMuted) => {
+const memberRow = (emoji, name, you, isMuted, stage) => {
   const row = document.createElement('div'); row.className = 'member' + (isMuted ? ' muted' : '')
   const av = document.createElement('span'); av.className = 'm-emoji'; av.textContent = emoji || '🙂'
   const nm = document.createElement('span'); nm.className = 'm-name'; nm.textContent = name || 'ゲスト'
+  if (stage) nm.append(' ' + stage)   // 成長段階の絵文字（名前の後ろ）
   if (you) { const t = document.createElement('span'); t.className = 'you'; t.textContent = '（あなた）'; nm.append(' ', t) }
   row.append(av, nm)
   if (isMuted) { const m = document.createElement('span'); m.className = 'm-mute'; m.textContent = '🔇'; m.title = 'ミュート中'; row.append(m) }
@@ -361,14 +386,14 @@ const memberRow = (emoji, name, you, isMuted) => {
 const renderMembers = () => {
   membersEl.replaceChildren(); emojiEls.clear()
   if (!joinedId) return
-  const add = (uid, emoji, name, you, isMuted) => {
-    const row = memberRow(emoji, name, you, isMuted)
+  const add = (uid, emoji, name, you, isMuted, stage) => {
+    const row = memberRow(emoji, name, you, isMuted, stage)
     emojiEls.set(uid, row.querySelector('.m-emoji'))
     membersEl.appendChild(row)
   }
-  add('self', profile.emoji, profile.name, true, muted)
+  add('self', profile.emoji, profile.name, true, muted, stageOf())
   // peers（接続の事実）を軸にし、プロフィール未着の相手は仮表示にする
-  peers.forEach(id => { const p = profiles.get(id) || {}; add(id, p.emoji, p.name, false, !!p.muted) })
+  peers.forEach(id => { const p = profiles.get(id) || {}; add(id, p.emoji, p.name, false, !!p.muted, p.stage) })
 }
 
 // アクティブスピーカー検出（VAD）：各ストリームの音量を測り、話している人の絵文字を跳ねさせる。
@@ -496,7 +521,8 @@ $('join').onclick = async () => {
       profiles.set(peerId, {
         name: String(data?.name ?? prev.name ?? '').slice(0, 20),
         emoji: String(data?.emoji ?? prev.emoji ?? '🙂').slice(0, 8),
-        muted: !!data?.muted
+        muted: !!data?.muted,
+        stage: String(data?.stage ?? prev.stage ?? '').slice(0, 4)
       })
       renderMembers()
     }
@@ -522,6 +548,11 @@ $('join').onclick = async () => {
   addAnalyser('self', myStream)   // 自分のマイク音量でも絵文字を跳ねさせる（ミュート中は無反応）
   startHeartbeat()                // ロビーへ自分の在室（部屋名・名前・絵文字）を定期発信
   renderLobby()                   // 自分の部屋を一覧に即反映（here ハイライト）
+  // 成長：参加回数と「使った日数」を加算し、通話中は30秒ごとに時間を貯める
+  stats.joins++
+  const d = localDay(); if (stats.lastDay !== d) { stats.days++; stats.lastDay = d }
+  saveStats(); renderGrow()
+  growTimer = setInterval(() => { stats.seconds += 30; saveStats(); renderGrow(); renderMembers() }, 30000)
   $('join').style.display = 'none'; $('mute').style.display = 'block'; $('leave').style.display = 'block'
   roomInput.disabled = true; lockProfile(true)
 }
@@ -542,6 +573,8 @@ $('leave').onclick = () => {
   peers.clear(); profiles.clear(); setCount(); profileAction = null
   stopVad()        // 解析ループ停止＋AudioContext破棄（join が確保したものを全て解放）
   stopHeartbeat()  // ロビーへ「退出した」を通知＋定期発信を停止（ロビー部屋自体は閲覧用に残す）
+  if (growTimer) { clearInterval(growTimer); growTimer = null }   // 成長の時間加算を停止
+  renderGrow()
   joinedId = null; warn = ''; renderMembers(); renderLobby()
   muted = false; $('mute').textContent = '🔇 ミュート'
   resetQr()   // QRトグルを畳んでおく（次の参加で古いリンクを残さない）
@@ -563,10 +596,10 @@ const LOBBY_ROOM = '__lobby__'
 const HEARTBEAT_MS = 5000    // 在室ハートビート間隔
 const STALE_MS = 15000       // これだけ無音なら「落ちた」とみなす
 let lobbyRoom = null, lobbyPresence = null, heartbeatTimer = null
-const presences = new Map()  // 発信者peerId → {room, name, emoji, muted, ts}
+const presences = new Map()  // 発信者peerId → {room, name, emoji, muted, stage, ts}
 
 const heartbeatPayload = () => joinedId
-  ? { room: joinedId, name: profile.name, emoji: profile.emoji, muted }
+  ? { room: joinedId, name: profile.name, emoji: profile.emoji, muted, stage: stageOf() }
   : { room: null }
 const sendHeartbeat = () => { if (lobbyPresence) lobbyPresence.send(heartbeatPayload()).catch(() => {}) }
 const startHeartbeat = () => { sendHeartbeat(); if (!heartbeatTimer) heartbeatTimer = setInterval(sendHeartbeat, HEARTBEAT_MS) }
@@ -581,8 +614,8 @@ const renderLobby = () => {
   // 部屋名 → 参加者[] に集約。自分は自分の発信を受け取らないので、通話中なら合成して足す。
   const byRoom = new Map()
   const push = (room, p) => { (byRoom.get(room) || byRoom.set(room, []).get(room)).push(p) }
-  presences.forEach(v => push(v.room, { name: v.name, emoji: v.emoji, muted: v.muted }))
-  if (joinedId) push(joinedId, { name: profile.name, emoji: profile.emoji, muted })
+  presences.forEach(v => push(v.room, { name: v.name, emoji: v.emoji, muted: v.muted, stage: v.stage }))
+  if (joinedId) push(joinedId, { name: profile.name, emoji: profile.emoji, muted, stage: stageOf() })
   list.replaceChildren()
   const names = [...byRoom.keys()].sort()
   status.textContent = names.length ? '' : 'いま通話中の部屋はありません'
@@ -597,7 +630,7 @@ const renderLobby = () => {
     people.forEach(p => {
       const rp = document.createElement('span'); rp.className = 'rp' + (p.muted ? ' mut' : '')
       const e = document.createElement('span'); e.textContent = p.emoji || '🙂'
-      const n = document.createElement('span'); n.textContent = (p.name || 'ゲスト') + (p.muted ? ' 🔇' : '')
+      const n = document.createElement('span'); n.textContent = (p.name || 'ゲスト') + (p.stage ? ' ' + p.stage : '') + (p.muted ? ' 🔇' : '')
       rp.append(e, n); ppl.append(rp)
     })
     btn.append(top, ppl)
@@ -636,7 +669,8 @@ const initLobby = async () => {
       if (!d || d.room == null) presences.delete(peerId)
       else presences.set(peerId, {
         room: String(d.room).slice(0, 40), name: String(d.name || '').slice(0, 20),
-        emoji: String(d.emoji || '🙂').slice(0, 8), muted: !!d.muted, ts: Date.now()
+        emoji: String(d.emoji || '🙂').slice(0, 8), muted: !!d.muted,
+        stage: String(d.stage || '').slice(0, 4), ts: Date.now()
       })
       renderLobby()
     }
