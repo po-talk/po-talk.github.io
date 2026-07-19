@@ -347,20 +347,22 @@ const profiles = new Map() // peerId → {name, emoji, muted}（相手から届�
 const myProfilePayload = () => ({ name: profile.name, emoji: profile.emoji, muted, stage: stageOf() })
 
 // Trystero 設定（通話部屋とロビー部屋で共用）。
-const TRYSTERO_CONFIG = {
+const TRYSTERO_BASE = {
   appId: 'kuramo-webrtc-call',
   // 相手発見を速く・確実に：信頼できるnostrリレーを明示＋多重接続（デフォルトの当たり外れ対策）
   relayConfig: {
     urls: ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.primal.net', 'wss://relay.nostr.band', 'wss://offchain.pub'],
     redundancy: 5
-  },
-  // NAT越え保険：直接繋がらない回線でも中継で確立（登録不要の公開 Open Relay）
-  turnConfig: [
-    { urls: 'turn:openrelay.metered.ca:80',                username: 'openrelayproject', credential: 'openrelayproject' },
-    { urls: 'turn:openrelay.metered.ca:443',               username: 'openrelayproject', credential: 'openrelayproject' },
-    { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
-  ]
+  }
 }
+// NAT越え：Cloudflare TURN を使う。資格情報は自前 Worker が短命で発行（秘密トークンはWorker内。
+// このアプリはリンクも音声も通さず"合鍵を受け取るだけ"）。読込時に一度取得してキャッシュ、失敗時は
+// STUNのみにフォールバック（直結できるペアは繋がる）。
+const TURN_WORKER_URL = 'https://pot-turn.itsuma-kuramoto.workers.dev/'
+let icePromise = null
+const loadIce = () => (icePromise ??= fetch(TURN_WORKER_URL).then(r => r.json()).then(d => d.iceServers).catch(e => { icePromise = null; throw e }))
+// 取得できた iceServers を rtcConfig に載せた最終設定を返す（未取得なら Trystero 既定＝STUNのみ）
+const trysteroConfig = ice => ice ? { ...TRYSTERO_BASE, rtcConfig: { iceServers: ice } } : TRYSTERO_BASE
 // ライブラリ読込は一度だけ。ロビー（ページ読込時）と参加（ボタン押下時）で共有する。
 // 失敗時はキャッシュを捨てて次回リトライできるようにする（参加フローの段階別エラー表示を壊さない）。
 let trysteroPromise = null
@@ -497,9 +499,11 @@ $('join').onclick = async () => {
     setState('❌ ライブラリ読込失敗: ' + (e.message || e), false); return
   }
 
-  // ③ 部屋に参加
+  // ③ 部屋に参加（先に TURN 資格情報を取得。失敗しても STUN のみで続行）
+  let ice = null
+  try { ice = await loadIce() } catch {}
   try {
-    room = joinRoom(TRYSTERO_CONFIG, roomId, {
+    room = joinRoom(trysteroConfig(ice), roomId, {
       // ピア単位の非致命エラー（幽霊ピアへのハンドシェイク失敗など）。部屋自体は生きていて
       // 他の相手とは繋がるので、状態は上書きせず render() の判断に委ねる。
       onJoinError: d => { warn = d.error?.message || String(d.error || '不明'); render() }
@@ -664,8 +668,10 @@ const initLobby = async () => {
   } catch {
     status.textContent = '⚠️ ロビーを読み込めませんでした（通話は使えます）'; return
   }
+  let ice = null
+  try { ice = await loadIce() } catch {}
   try {
-    lobbyRoom = joinRoom(TRYSTERO_CONFIG, LOBBY_ROOM)
+    lobbyRoom = joinRoom(trysteroConfig(ice), LOBBY_ROOM)
     lobbyPresence = lobbyRoom.makeAction('presence')
     lobbyPresence.onMessage = (d, { peerId }) => {
       if (!d || d.room == null) presences.delete(peerId)
