@@ -19,6 +19,7 @@
   .card{ width:100%; max-width:440px; background:rgba(255,255,255,.04);
     border:1px solid rgba(255,255,255,.09); border-radius:18px; padding:28px }
   h1{ margin:0 0 4px; font-size:22px }
+  h1 span{ white-space:nowrap }  /* 「ぽっと通話」と「〈実験版〉」の境目でだけ折り返す */
   p.sub{ margin:0 0 20px; color:#9fb0c7; font-size:14px; line-height:1.6 }
   .head-row{ display:flex; align-items:flex-start; justify-content:space-between; gap:10px }
   .help-btn{ flex:none; width:auto; margin:2px 0 0; padding:6px 12px; font-size:12px; font-weight:700;
@@ -124,7 +125,7 @@
 <div class="wrap">
 <div class="card">
   <div class="head-row">
-    <h1>🦞 ぽっと通話〈実験版〉</h1>
+    <h1><span>🦞 ぽっと通話</span><span>〈実験版〉</span></h1>
     <button id="help" class="help-btn" type="button" aria-haspopup="dialog">これはなに？</button>
   </div>
   <p class="sub">同じ部屋名を開いた人どうしが、そのまま音声通話（WebRTC・P2P）。サーバ不要。</p>
