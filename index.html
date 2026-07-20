@@ -32,13 +32,32 @@
   .head-row{ display:flex; align-items:flex-start; justify-content:space-between; gap:10px }
   .help-btn{ flex:none; width:auto; margin:2px 0 0; padding:6px 12px; font-size:12px; font-weight:700;
     background:#1d2740; color:#cfe; border-radius:999px }
-  /* ヘルプはモーダル（<dialog>）。背景を半透明で覆い、中央にポップアップ */
-  .help-dialog{ border:0; border-radius:16px; padding:24px; width:calc(100% - 40px); max-width:360px;
-    background:#111a2e; color:#eef2f8; box-shadow:0 24px 70px rgba(0,0,0,.55) }
+  /* ヘルプはモーダル（<dialog>）。背景を半透明で覆い、中央にポップアップ。長いので内部スクロール */
+  .help-dialog{ border:0; border-radius:16px; padding:22px; width:calc(100% - 36px); max-width:420px;
+    max-height:86vh; overflow-y:auto; background:#111a2e; color:#eef2f8; box-shadow:0 24px 70px rgba(0,0,0,.55) }
   .help-dialog::backdrop{ background:rgba(5,8,15,.62); backdrop-filter:blur(2px) }
   .help-dialog h2{ margin:0 0 12px; font-size:18px }
-  .help-dialog p{ margin:0 0 18px; font-size:14px; color:#cfe0f0; line-height:1.8 }
-  .help-hide{ display:flex; align-items:center; gap:8px; margin:0 0 16px; font-size:13px; color:#9fb0c7; cursor:pointer }
+  .help-dialog h3{ margin:22px 0 8px; font-size:14px; color:#00e5cc }
+  .help-dialog p{ margin:0 0 12px; font-size:13.5px; color:#cfe0f0; line-height:1.75 }
+  .help-dialog ul, .help-dialog ol{ margin:0 0 12px; padding-left:1.3em; font-size:13.5px; color:#cfe0f0; line-height:1.65 }
+  .help-dialog li{ margin:4px 0 }
+  .help-dialog a{ color:#00e5cc }
+  .help-dialog code{ background:#0d1526; padding:1px 5px; border-radius:5px; font-size:12px }
+  .help-dialog p.help-sub{ margin:12px 0 3px; font-size:12px; font-weight:700; color:#9fb0c7 }
+  .help-dialog p.help-tip{ background:#0d1526; border:1px solid rgba(255,255,255,.08); border-radius:10px; padding:10px 12px; font-size:12.5px; line-height:1.7 }
+  .help-dialog p.help-warn{ color:#ffd24d; font-weight:700; font-size:14.5px }
+  /* 見出しごとに開閉するアコーディオン（畳んだ状態で開くので「閉じる」も見つけやすい） */
+  .help-sec{ border-top:1px solid rgba(255,255,255,.08) }
+  .help-sec > summary{ list-style:none; cursor:pointer; display:flex; align-items:center;
+    padding:12px 2px; font-size:14px; font-weight:700; color:#00e5cc }
+  .help-sec > summary::-webkit-details-marker{ display:none }
+  .help-sec > summary::after{ content:'▾'; margin-left:auto; font-size:12px; color:#9fb0c7; transition:transform .15s }
+  .help-sec[open] > summary::after{ transform:rotate(180deg) }
+  .help-sec > *:not(summary):first-of-type{ margin-top:2px }
+  .help-sec > *:last-child{ margin-bottom:10px }
+  .help-follow{ display:block; width:100%; max-width:240px; margin:6px auto 12px; border-radius:14px }
+  .help-dialog p.help-credit{ font-size:12.5px; color:#9fb0c7 }
+  .help-hide{ display:flex; align-items:center; gap:8px; margin:20px 0 12px; font-size:13px; color:#9fb0c7; cursor:pointer }
   .help-hide input{ width:auto; margin:0; padding:0; accent-color:#00e5cc }
   .help-close{ width:100%; margin:0; padding:12px; background:#2a3550; color:#eef2f8; border-radius:10px; font-weight:700 }
   /* 共有アクション：コピーとQRを横並び */
@@ -197,7 +216,70 @@
 
 <dialog id="helpDialog" class="help-dialog">
   <h2>🦞 これはなに？</h2>
-  <p>実験中です。自己責任で。</p>
+
+  <p>同じ部屋名を開いた人どうしが、そのまま音声でおしゃべりできる実験的なミニ通話です。サーバを持たず、ブラウザ同士が直接つながります（WebRTC・P2P）。</p>
+  <p>配信アプリ <b>POPOPO</b> にインスパイアされて作りました。</p>
+  <p class="help-tip">💡 部屋名はURLの一部（末尾の <code>#◯◯</code>）。共有リンク＝その部屋のURLなので、開けば同じ部屋に入れます。</p>
+  <p class="help-warn">⚠️ 実験中です。ご利用は自己責任で！</p>
+
+  <details class="help-sec"><summary>つかいかた</summary>
+    <p class="help-sub">まず（共通）</p>
+    <ul><li>名前とアバター（絵文字）を決める（ブラウザに保存され、次回も引き継ぎます）</li></ul>
+    <p class="help-sub">部屋を作る</p>
+    <ol><li>部屋名を入れて「参加する」→ マイクを許可</li><li>同じ部屋名・共有リンク・QRコードを相手に渡す</li></ol>
+    <p class="help-sub">部屋に入る</p>
+    <ul><li>「通話中の部屋」から選んでタップ（共有リンク／QRからも入れます）→ マイクを許可</li></ul>
+  </details>
+
+  <details class="help-sec"><summary>できること</summary>
+    <ul>
+      <li>🟢 ロビー：いま通話中の部屋が一覧で見える</li>
+      <li>👥 参加者：名前・絵文字が出て、話している人の絵文字が跳ねる／ミュートも表示</li>
+      <li>🌱 育てる：使うほどあなたの絵文字が成長（🌱→🌿→🌷→❓）</li>
+    </ul>
+  </details>
+
+  <details class="help-sec"><summary>しくみ・プライバシー</summary>
+    <ul>
+      <li>音声はブラウザ間で<b>直接</b>やりとり（サーバに録音・保存されません）</li>
+      <li>部屋名を知っている人は誰でも入れます。ロビーにも表示されます（＝内緒の部屋ではありません）</li>
+      <li>アクセス数の測定に Cloudflare Web Analytics を使用（Cookie不使用・個人は特定しません）</li>
+    </ul>
+  </details>
+
+  <details class="help-sec"><summary>注意（実験版）</summary>
+    <ul>
+      <li>実験中のため、切断や不具合が起きることがあります</li>
+      <li>マイクの許可が必要です。<b>Safari / Chrome</b> で開いてください（アプリ内ブラウザは不可）</li>
+      <li>iPhoneでは「音声を有効化」ボタンが出ることがあります</li>
+      <li>快適なのは <b>4〜6人</b> くらいまで（全員が全員につながる方式のため）</li>
+      <li>回線によっては稀につながらないことがあります</li>
+      <li>過去の会話は残りません（録音保存なし）</li>
+      <li>ブラウザは別々に扱われます：スマホとPCは別、PCでもSafari/Chromeなど別ソフトは別、同じChromeでもプロファイルが違えば別ブラウザ扱い（名前や成長は引き継がれません）</li>
+      <li>利用で生じた損害は自己責任で。一般的なモラルを守ってお使いください。（利用ガイドライン作成中）</li>
+    </ul>
+  </details>
+
+  <details class="help-sec"><summary>運営について</summary>
+    <p>オープンソース・自由利用の精神で公開しています。運営なし・ノーサポート（困っても個別対応はできません、ごめんね）。</p>
+  </details>
+
+  <details class="help-sec"><summary>POPOPOから来た方へ</summary>
+    <ul>
+      <li>ホロスーツはありません、ごめんね🙏</li>
+      <li>全員がスピーカー状態なので、<b>雑談向け</b>です</li>
+      <li>コメント・画像投稿は<b>計画中</b>（応援よろしく！）</li>
+      <li>配信スタイル向けに「入室時ミュート／ミュート解除は許可制」…ほしいですか？（要望募集中）</li>
+    </ul>
+  </details>
+
+  <details class="help-sec"><summary>制作者</summary>
+    <p>♨️🦈 <b>qramo(ｸﾗﾓ) on POPOPO</b> ／ 📡 POPOPO枠で開発配信中！<br>スマホで読み取ってフォローしてね👇</p>
+    <img class="help-follow" src="popopo-follow.png" alt="POPOPO で qramo をフォロー（QRコード）" loading="lazy">
+    <p><a href="https://www.popopo.com/users/BRhRf3YRbFTgfJD7SLKYmZ8f2Z42" target="_blank" rel="noopener">POPOPOのプロフィール →</a></p>
+    <p class="help-credit">🤖 開発は <a href="https://claude.com/claude-code" target="_blank" rel="noopener">Claude Code</a> と一緒に</p>
+  </details>
+
   <label class="help-hide"><input type="checkbox" id="helpHide"> 今後表示しない</label>
   <button id="helpClose" class="help-close" type="button">閉じる</button>
 </dialog>
@@ -210,7 +292,8 @@ if (/(FBAN|FBAV|Instagram|Line\/|Twitter|MicroMessenger|; wv\))/i.test(navigator
 
 // 「これはなに？」ヘルプ（モーダル）。ESCは <dialog> が標準対応。
 const helpDialog = $('helpDialog')
-$('help').onclick = () => helpDialog.showModal()
+const openHelp = () => { helpDialog.showModal(); helpDialog.scrollTop = 0 }  // 自動フォーカスで下へ飛ぶのを防ぎ先頭表示
+$('help').onclick = openHelp
 $('helpClose').onclick = () => helpDialog.close()
 helpDialog.addEventListener('click', e => { if (e.target === helpDialog) helpDialog.close() })  // 背景クリックで閉じる
 
@@ -219,7 +302,7 @@ const HELP_HIDE_KEY = 'pot-call-hide-help'
 const helpHide = $('helpHide')
 try { helpHide.checked = localStorage.getItem(HELP_HIDE_KEY) === '1' } catch {}
 helpHide.onchange = () => { try { localStorage.setItem(HELP_HIDE_KEY, helpHide.checked ? '1' : '') } catch {} }
-try { if (localStorage.getItem(HELP_HIDE_KEY) !== '1') helpDialog.showModal() } catch {}
+try { if (localStorage.getItem(HELP_HIDE_KEY) !== '1') openHelp() } catch {}
 
 // 招待リンクのQRコード（参加中ボード内にトグル表示）。ライブラリは必要時だけ esm.sh から
 // 読み込み、生成はクライアント側＝リンクを外部に送らない。
