@@ -34,7 +34,9 @@
     background:#1d2740; color:#cfe; border-radius:999px }
   /* ヘルプはモーダル（<dialog>）。背景を半透明で覆い、中央にポップアップ。長いので内部スクロール */
   .help-dialog{ border:0; border-radius:16px; padding:22px; width:calc(100% - 36px); max-width:420px;
-    max-height:86vh; overflow-y:auto; background:#111a2e; color:#eef2f8; box-shadow:0 24px 70px rgba(0,0,0,.55) }
+    max-height:86vh; overflow-y:auto; overscroll-behavior:contain;
+    background:#111a2e; color:#eef2f8; box-shadow:0 24px 70px rgba(0,0,0,.55) }
+    /* overscroll-behavior:contain … 本文の端まで送っても背面ページへスクロールが連鎖しない */
   .help-dialog::backdrop{ background:rgba(5,8,15,.62); backdrop-filter:blur(2px) }
   /* 右上の❌。本文が長く下の「閉じる」まで届かないので、sticky でスクロール中も出しておく。
      float:right で h2 が横に回り込み、見出しの行を潰さない。 */
@@ -370,7 +372,28 @@ if (/(FBAN|FBAV|Instagram|Line\/|Twitter|MicroMessenger|; wv\))/i.test(navigator
 
 // 「これはなに？」ヘルプ（モーダル）。ESCは <dialog> が標準対応。
 const helpDialog = $('helpDialog')
-const openHelp = () => { helpDialog.showModal(); helpDialog.scrollTop = 0 }  // 自動フォーカスで下へ飛ぶのを防ぎ先頭表示
+// モーダル表示中は背面ページのスクロールを止める。showModal() はクリックは遮るがスクロールは
+// 素通しなので自前で固定する。iOS Safari は html{overflow:hidden} だけでは効かないことがあるため
+// body を position:fixed にして今の位置を top で保持し、閉じるときに元の位置へ戻す。
+let scrollLockY = 0
+const lockScroll = on => {
+  const s = document.body.style
+  if (on) {
+    if (s.position === 'fixed') return   // 二重ロック防止：固定中の scrollY は 0 なので保存値を壊してしまう
+    scrollLockY = window.scrollY
+    s.position = 'fixed'; s.top = -scrollLockY + 'px'; s.left = '0'; s.right = '0'; s.width = '100%'
+  } else {
+    s.position = ''; s.top = ''; s.left = ''; s.right = ''; s.width = ''
+    window.scrollTo(0, scrollLockY)
+  }
+}
+const openHelp = () => {
+  // 前回開いていた節が残っていると分かりにくいので、開くたびに全部畳んでおく
+  helpDialog.querySelectorAll('.help-sec[open]').forEach(d => { d.open = false })
+  lockScroll(true); helpDialog.showModal(); helpDialog.scrollTop = 0  // 自動フォーカスで下へ飛ぶのを防ぎ先頭表示
+}
+// ESC・✕・閉じる・背景クリックのどれで閉じても解除されるよう close イベントで戻す
+helpDialog.addEventListener('close', () => lockScroll(false))
 $('help').onclick = openHelp
 $('helpClose').onclick = () => helpDialog.close()
 $('helpX').onclick = () => helpDialog.close()   // 右上の❌（本文が長いと下の「閉じる」が見えないため）
