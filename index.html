@@ -702,7 +702,15 @@ document.addEventListener('visibilitychange', () => {
 })
 
 $('join').onclick = async () => {
-  const roomId = roomInput.value.trim() || 'lobby'
+  // 空欄のときは名前から作る（'lobby' に落とすと、その名前が #lobby としてURLに焼き付き、
+  // 以後ハッシュ優先で自動命名が効かなくなって二度と抜けられなくなる）。名前も無ければ促して中止。
+  const roomId = roomInput.value.trim() || defaultRoom()
+  if (!roomId) {
+    setState('部屋名を入れてください', 'warn')
+    roomInput.focus()
+    return
+  }
+  roomInput.value = roomId          // 補った名前を入力欄にも反映する
   location.hash = encodeURIComponent(roomId)
   $('share').textContent = location.href; $('share').href = location.href; $('shareWrap').hidden = false
 
