@@ -137,7 +137,8 @@
   @media (prefers-reduced-motion:reduce){ .collapsible{ transition:none } }
   .profile{ margin-top:4px }
   .profile > summary{ list-style:none; cursor:pointer; display:flex; align-items:center; gap:10px;
-    padding:12px 14px; border-radius:12px; background:#0d1526; border:1px solid rgba(255,255,255,.12) }
+    padding:12px 14px; border-radius:12px; background:#0d1526; border:1px solid rgba(255,255,255,.12);
+    transition:padding .28s ease, background-color .28s ease, border-color .28s ease }
   .profile > summary::-webkit-details-marker{ display:none }
   .pf-emoji{ font-size:22px; line-height:1 }
   .pf-name{ font-weight:700; font-size:15px }
@@ -145,9 +146,17 @@
   .pf-open-label{ display:none; font-size:13px; color:#9fb0c7 }
   /* 開いている間は summary を「あなたの名前」ラベル行に変身させ、右端に「閉じる」を置く。
      枠（背景・境界線）は外し、他のラベルと同じ余白で入力欄に繋げる（独立行を作らず一体化） */
-  .profile[open] .pf-emoji, .profile[open] .pf-name{ display:none }
-  .profile[open] .pf-open-label{ display:inline }
-  .profile[open] > summary{ background:none; border:0; padding:14px 2px 6px }
+  /* :not(.pf-collapsed) … 閉じるアニメーション中（openはまだtrue）は閉じた見た目に切り替える */
+  .profile[open]:not(.pf-collapsed) .pf-emoji, .profile[open]:not(.pf-collapsed) .pf-name{ display:none }
+  .profile[open]:not(.pf-collapsed) .pf-open-label{ display:inline }
+  .profile[open]:not(.pf-collapsed) > summary{ background:none; border:0; padding:14px 2px 6px }
+  /* 開閉をスライドさせる。<details> は閉じると中身が display:none になり素直には動かないので、
+     中身をラップして grid-template-rows 1fr→0fr で高さを補間する（JSが .pf-collapsed を付け外し）。
+     部屋名などを畳む .collapsible と同じ仕組み。 */
+  .profile .pf-body{ display:grid; grid-template-rows:1fr; transition:grid-template-rows .28s ease }
+  .profile .pf-body > *{ overflow:hidden; min-height:0 }
+  .profile.pf-collapsed .pf-body{ grid-template-rows:0fr }
+  @media (prefers-reduced-motion:reduce){ .profile .pf-body{ transition:none } }
   /* 通話中はプロフィール変更不可：summary をグレーアウトして開閉も止める */
   .profile.locked > summary{ opacity:.5; pointer-events:none }
   /* 参加者リスト（絵文字＋名前） */
@@ -237,12 +246,14 @@
       <span class="pf-open-label">あなたの名前</span>
       <span class="pf-edit" id="pfEdit">変更 ▾</span>
     </summary>
-    <input id="name" placeholder="ゲスト" autocomplete="off" maxlength="20" aria-label="あなたの名前">
+    <div class="pf-body"><div>
+      <input id="name" placeholder="ゲスト" autocomplete="off" maxlength="20" aria-label="あなたの名前">
 
-    <label>アバター</label>
-    <div id="avatars" class="avatars"></div>
+      <label>アバター</label>
+      <div id="avatars" class="avatars"></div>
 
-    <div class="grow-note" id="growNote"></div>
+      <div class="grow-note" id="growNote"></div>
+    </div></div>
   </details>
 
   <div id="roomField">
@@ -500,6 +511,28 @@ profileBox.open = !savedRaw
 const syncToggleLabel = () => { $('pfEdit').textContent = profileBox.open ? '閉じる ▴' : '変更 ▾' }
 profileBox.addEventListener('toggle', syncToggleLabel)  // 開閉に追従して文言を切り替え
 syncToggleLabel()
+
+// 開閉をスライドさせる。<details> の既定は瞬時に切り替わるので、summary のクリックを横取りして
+// 「開く時：先に open にしてから 0→実高さ」「閉じる時：実高さ→0 のあとで open を外す」を自分でやる。
+// 閉じるのを待たせる必要があるのは、open を外した瞬間に中身が display:none になってしまうため。
+const pfSlide = profileBox.querySelector('.pf-body')
+let pfAnim = null
+profileBox.querySelector('summary').addEventListener('click', e => {
+  if (profileBox.classList.contains('locked')) return
+  e.preventDefault()                    // 既定の即時トグルを止めて自前で制御する
+  clearTimeout(pfAnim)
+  const dur = matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 300
+  if (profileBox.open) {
+    profileBox.classList.add('pf-collapsed')
+    pfAnim = setTimeout(() => { profileBox.open = false; profileBox.classList.remove('pf-collapsed') }, dur)
+  } else {
+    profileBox.classList.add('pf-collapsed')
+    profileBox.open = true
+    requestAnimationFrame(() => requestAnimationFrame(() => profileBox.classList.remove('pf-collapsed')))
+  }
+  // open はまだ切り替わっていない（閉じる側は遅延する）ので、文言はこれからの状態で更新する
+  $('pfEdit').textContent = profileBox.classList.contains('pf-collapsed') && profileBox.open ? '変更 ▾' : '閉じる ▴'
+})
 renderProfileSummary()
 
 // 成長（ブラウザを育てる遊び）。累積を localStorage に貯め、段階の絵文字を出す。数字は見せない。
@@ -527,7 +560,7 @@ renderGrow()
 const lockProfile = on => {
   nameInput.disabled = on
   avatarsEl.querySelectorAll('.avatar').forEach(b => { b.disabled = on })
-  if (on) profileBox.open = false               // 通話中は畳む
+  if (on) { clearTimeout(pfAnim); profileBox.classList.remove('pf-collapsed'); profileBox.open = false }  // 通話中は畳む（アニメ途中でも確実に閉じる）
   profileBox.classList.toggle('locked', on)     // 「変更」トグルもグレーアウト＋操作不可に
 }
 
