@@ -106,10 +106,19 @@
   #copy{ background:#1d2740; color:#cfe; margin-top:8px; padding:10px; font-size:14px }
   #qr{ background:#1d2740; color:#cfe; margin-top:8px; padding:10px; font-size:14px }
   .status{ margin-top:18px; padding:14px; border-radius:10px; background:#0d1526; font-size:14px; line-height:1.7 }
+  /* 状態はこのドットの色だけで表す（文字側に絵文字は置かない）。既定＝グレー＝未参加／退出後 */
   .dot{ display:inline-block; width:9px; height:9px; border-radius:50%; background:#48507a; margin-right:7px; vertical-align:middle }
-  .dot.on{ background:#00e5cc }
+  .dot.busy { background:#4da3ff; animation:dot-pulse 1.2s ease-in-out infinite }  /* 準備中 */
+  .dot.ok   { background:#00e5cc }   /* 参加・通話中 */
+  .dot.warn { background:#ffd24d }   /* 繋がらない相手がいる */
+  .dot.error{ background:#ff5d5d }   /* 失敗 */
+  @keyframes dot-pulse{ 50%{ opacity:.35 } }
+  @media (prefers-reduced-motion:reduce){ .dot.busy{ animation:none } }
   .peers{ font-size:26px; font-weight:800; color:#00e5cc }
-  a.share{ color:#00e5cc; word-break:break-all; font-size:13px }
+  /* 共有リンクは長くなりがちなので既定は1行＋末尾を「…」で省略。コピー時とQR表示中だけ全文に開く */
+  a.share{ display:block; color:#00e5cc; font-size:13px;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
+  a.share.full{ white-space:normal; overflow-wrap:anywhere }
   /* アバター選択（絵文字）。共通の button{width:100%} を打ち消して小さなチップにする */
   .avatars{ display:grid; grid-template-columns:repeat(8,1fr); gap:6px; margin-top:6px }
   .avatar{ width:auto; margin:0; padding:8px 0; font-size:20px; line-height:1;
@@ -117,6 +126,13 @@
   .avatar[aria-pressed="true"]{ border-color:#00e5cc; background:#0c2b2a }
   .avatar:disabled{ opacity:.5; cursor:default }
   /* プロフィール折りたたみ（初回は開く、以降は閉じる） */
+  /* 参加中に畳む入力欄（名前・部屋名）。grid-template-rows 1fr→0fr は中身の高さを測らずに
+     滑らかに畳めるやり方。display:none だとトランジションが効かないのでこの形にしている */
+  .collapsible{ display:grid; grid-template-rows:1fr; opacity:1;
+    transition:grid-template-rows .3s ease, opacity .22s ease }
+  .collapsible > *{ overflow:hidden; min-height:0 }
+  .collapsible.collapsed{ grid-template-rows:0fr; opacity:0 }
+  @media (prefers-reduced-motion:reduce){ .collapsible{ transition:none } }
   .profile{ margin-top:4px }
   .profile > summary{ list-style:none; cursor:pointer; display:flex; align-items:center; gap:10px;
     padding:12px 14px; border-radius:12px; background:#0d1526; border:1px solid rgba(255,255,255,.12) }
@@ -182,6 +198,7 @@
   </div>
   <p class="sub">同じ部屋名を開いた人どうしが、そのまま音声通話（WebRTC・P2P）。サーバ不要。</p>
 
+  <div id="setupFields" class="collapsible"><div>
   <details id="profileBox" class="profile">
     <summary>
       <span class="pf-emoji" id="pfEmoji">🦞</span>
@@ -197,8 +214,11 @@
     <div class="grow-note" id="growNote"></div>
   </details>
 
-  <label for="room">部屋名</label>
-  <input id="room" placeholder="◯◯の部屋" autocomplete="off">
+  <div id="roomField">
+    <label for="room">部屋名</label>
+    <input id="room" placeholder="◯◯の部屋" autocomplete="off">
+  </div>
+  </div></div>
 
   <button id="join">🎙 参加する</button>
   <button id="unlock">🔊 音声を有効化（タップ）</button>
@@ -332,11 +352,12 @@ try { if (localStorage.getItem(HELP_HIDE_KEY) !== '1') openHelp() } catch {}
 // 読み込み、生成はクライアント側＝リンクを外部に送らない。
 let qrLib = null, qrShown = false
 const loadQR = () => (qrLib ??= import('https://esm.sh/qrcode-generator@1.4.4').then(m => m.default || m).catch(e => { qrLib = null; throw e }))
-const resetQr = () => { qrShown = false; $('qrBox').hidden = true; $('qr').setAttribute('aria-expanded', 'false'); $('qrImg').textContent = ''; $('qrRoom').textContent = '' }
+const resetQr = () => { qrShown = false; $('qrBox').hidden = true; $('qr').setAttribute('aria-expanded', 'false'); $('qrImg').textContent = ''; $('qrRoom').textContent = ''; $('share').classList.remove('full') }
 $('qr').onclick = async () => {
   qrShown = !qrShown
   $('qrBox').hidden = !qrShown
   $('qr').setAttribute('aria-expanded', String(qrShown))
+  $('share').classList.toggle('full', qrShown)   // QRを出している間は全文を見せる
   if (!qrShown) return
   const img = $('qrImg')
   img.textContent = '生成中…'
@@ -353,7 +374,11 @@ const copyLink = async btn => {
   try {
     await navigator.clipboard.writeText(location.href)
     btn.textContent = 'コピーしました ✓'
-    clearTimeout(btn._revert); btn._revert = setTimeout(() => { btn.textContent = original }, 1600)  // 少し後に元へ
+    $('share').classList.add('full')   // 何をコピーしたか確かめられるよう、この間だけ全文を見せる
+    clearTimeout(btn._revert); btn._revert = setTimeout(() => {
+      btn.textContent = original
+      if (!qrShown) $('share').classList.remove('full')   // QR表示中なら開いたままにする
+    }, 1600)  // 少し後に元へ
   } catch {
     btn.textContent = '長押しでコピー: ' + location.href  // 失敗時はURLを残す（長押しでコピーできるように）
   }
@@ -486,7 +511,8 @@ const loadTrystero = () => {
   return trysteroPromise
 }
 
-const setState = (t, on) => { $('state').textContent = t; $('dot').classList.toggle('on', !!on) }
+// 状態表示。kind は 'idle'|'busy'|'ok'|'warn'|'error' でドットの色に対応する（文字側に絵文字は置かない）
+const setState = (t, kind = 'idle') => { $('state').textContent = t; $('dot').className = 'dot' + (kind === 'idle' ? '' : ' ' + kind) }
 const setCount = () => { $('count').textContent = peers.size }
 
 // 参加者リスト（自分＋接続中の相手）を描く。名前・絵文字は textContent で入れる（受信データは信用しない）。
@@ -566,9 +592,9 @@ const vadTick = () => {
 // 繋がってさえいれば、幽霊ピアのハンドシェイク失敗などは表に出さない。
 const render = () => {
   if (!joinedId) return
-  if (peers.size) setState('🟢 通話中：' + joinedId, true)
-  else if (warn) setState('⚠️ ' + warn + '（相手を探しています…）', true)
-  else setState('🟢 参加中：' + joinedId + '（相手を探しています…）', true)
+  if (peers.size) setState('通話中：' + joinedId, 'ok')
+  else if (warn) setState(warn + '（相手を探しています…）', 'warn')
+  else setState('参加中：' + joinedId + '（相手を探しています…）', 'ok')
 }
 const play = el => el.play().catch(() => { $('unlock').style.display = 'block' })
 const allAudios = () => [...audios.values()].flat()
@@ -593,25 +619,25 @@ $('join').onclick = async () => {
   // room.leave() は非同期で、最後まで走って初めて部屋の登録が解除される。
   // 解除前に joinRoom すると「退出済みの死んだroom」が例外なしで返ってくるので、必ず待つ。
   if (leaving) {
-    setState('⏳ 退出処理の完了を待っています…', false)
+    setState('退出処理の完了を待っています…', 'busy')
     await leaving
   }
 
   // ① マイク取得
-  setState('① マイクを取得中…（許可を押して）', false)
+  setState('マイクを取得中…（許可を押して）', 'busy')
   try {
     myStream = await navigator.mediaDevices.getUserMedia({ audio: true })
   } catch (e) {
-    setState('❌ マイク取得失敗: ' + e.name, false); return
+    setState('マイク取得失敗: ' + e.name, 'error'); return
   }
 
   // ② 接続ライブラリ読込
-  setState('② 接続ライブラリを読込中…', false)
+  setState('接続ライブラリを読込中…', 'busy')
   let joinRoom
   try {
     ({ joinRoom } = await loadTrystero())
   } catch (e) {
-    setState('❌ ライブラリ読込失敗: ' + (e.message || e), false); return
+    setState('ライブラリ読込失敗: ' + (e.message || e), 'error'); return
   }
 
   // ③ 部屋に参加（先に TURN 資格情報を取得。失敗しても STUN のみで続行）
@@ -628,7 +654,7 @@ $('join').onclick = async () => {
     // 同じ（死んだ）roomオブジェクトを返す。掴んだままだと永久に繋がらないので弾く。
     if (room === lastRoom) {
       room = null
-      setState('❌ 前回の退出処理が完了していません。ページを再読込してください', false); return
+      setState('前回の退出処理が完了していません。ページを再読込してください', 'error'); return
     }
     lastRoom = room
 
@@ -661,7 +687,7 @@ $('join').onclick = async () => {
     room.onPeerJoin = id => { peers.add(id); room.addStream(myStream, { target: id }); sendProfile(id); warn = ''; setCount(); render(); renderMembers() }
     room.onPeerLeave = id => { peers.delete(id); profiles.delete(id); dropAudios(id); removeAnalyser(id); setCount(); render(); renderMembers() }
   } catch (e) {
-    setState('❌ 接続失敗: ' + (e.message || e), false); return
+    setState('接続失敗: ' + (e.message || e), 'error'); return
   }
 
   wantWake = true; wake()
@@ -676,6 +702,8 @@ $('join').onclick = async () => {
   growTimer = setInterval(() => { stats.seconds += 30; saveStats(); renderGrow(); renderMembers() }, 30000)
   $('join').style.display = 'none'; $('mute').style.display = 'block'; $('leave').style.display = 'block'
   roomInput.disabled = true; lockProfile(true)
+  // 通話中は名前も部屋名も変えられないので、入力欄ごと畳む（名前は参加者リスト、部屋名は状態表示に出ている）
+  $('setupFields').classList.add('collapsed')
 }
 
 $('mute').onclick = () => {
@@ -699,9 +727,10 @@ $('leave').onclick = () => {
   joinedId = null; warn = ''; renderMembers(); renderLobby()
   muted = false; $('mute').textContent = '🔇 ミュート'
   resetQr()   // QRトグルを畳んでおく（次の参加で古いリンクを残さない）
-  setState('退出しました', false)
+  setState('退出しました', 'idle')
   $('join').style.display = 'block'; $('mute').style.display = 'none'; $('leave').style.display = 'none'; $('unlock').style.display = 'none'
   roomInput.disabled = false; lockProfile(false)
+  $('setupFields').classList.remove('collapsed')   // join で畳んだ入力欄を戻す
 
   // UIは即座に戻すが、実際の退出は非同期に続く。次の参加はこれの完了を待つ（⓪参照）。
   // 失敗しても再参加を塞がないよう握りつぶす（掴んだ場合は上のゾンビ検出が拾う）。
