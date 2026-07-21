@@ -71,7 +71,7 @@
     padding:12px 2px; font-size:14px; font-weight:700; color:#00e5cc }
   /* 開いた見出しはバーごとハイライト。本文(.04)より濃い帯にして、押せる見出しだと際立たせる。
      パディングを増やしたぶん左右に負マージンを与え、文字位置を閉じたとき(padding 2px)と揃える＝開閉で動かない */
-  .help-sec[open] > summary{ padding:12px 12px; margin:2px -10px 6px;
+  .help-sec[open] > summary{ padding:12px 12px; margin:0 -10px 6px;
     background:rgba(0,229,204,.14); border-radius:10px }
   .help-sec > summary::-webkit-details-marker{ display:none }
   .help-sec > summary::after{ content:'▾'; margin-left:auto; font-size:12px; color:#9fb0c7; transition:transform .15s }
