@@ -189,6 +189,12 @@
     background:#0d1526; border:1px solid rgba(255,255,255,.09); border-radius:12px }
   .room:hover{ border-color:#00e5cc }
   .room.here{ border-color:#00e5cc; background:#0c2b2a }
+  /* 活発さ：内側にリングを描いて濃さ・太さを段階変化させる。box-shadow の inset なので
+     border と違って内寸が変わらず中身がずれない。静的な状態なので、5秒ごとの再描画でも
+     アニメーションのように途中で切れてガクつくことがない */
+  .room.act1{ box-shadow:inset 0 0 0 1px rgba(0,229,204,.30) }
+  .room.act2{ box-shadow:inset 0 0 0 2px rgba(0,229,204,.48) }
+  .room.act3{ box-shadow:inset 0 0 0 3px rgba(0,229,204,.68) }
   /* 部屋名は1行に収め、はみ出したら「…」で省略する（長文を書く場所ではないので伸ばさない）。
      人数は縮まず折り返さないよう固定（min-width:0 が無いと flex 要素は内容幅より縮まず人数を押し出す） */
   .room-top{ display:flex; align-items:center; gap:8px }
@@ -335,7 +341,7 @@
   <details class="help-sec"><summary>しくみ・プライバシー</summary>
     <ul>
       <li>音声はブラウザ間で<b>直接</b>やりとり（サーバに録音・保存されません）</li>
-      <li>部屋名を知っている人は誰でも入れます。ロビーには<b>部屋名・参加者・どのくらい続いているか</b>が表示されます（＝内緒の部屋ではありません）</li>
+      <li>部屋名を知っている人は誰でも入れます。ロビーには<b>部屋名・参加者・どのくらい続いているか・話しているかどうか</b>が表示されます（＝内緒の部屋ではありません）</li>
       <li>アクセス数の測定に Cloudflare Web Analytics を使用（Cookie不使用・個人は特定しません）</li>
     </ul>
   </details>
@@ -669,6 +675,25 @@ const renderMembers = () => {
 let audioCtx = null
 const analysers = new Map()  // uid → {analyser, data, src}
 let vadRAF = null
+
+// ロビーに出す「部屋の活発さ」。自分が話していた時間の割合を数秒ぶん集計して 0〜3 に落とす。
+// 送信の瞬間の値だと息継ぎで「静か」になってしまうので、必ず窓で均す。送信タイミングとは
+// 独立に更新するので、臨時のハートビート（新しい閲覧者が来た時など）でも値が乱れない。
+const TALK_WINDOW_MS = 4000
+let talkLevel = 0, talkSpokeMs = 0, talkTotalMs = 0, talkLastTs = 0
+const accumulateTalk = active => {
+  const now = performance.now()
+  const dt = talkLastTs ? Math.min(now - talkLastTs, 100) : 0   // タブ復帰時の巨大な差分は捨てる
+  talkLastTs = now
+  talkTotalMs += dt
+  if (active) talkSpokeMs += dt
+  if (talkTotalMs >= TALK_WINDOW_MS) {
+    const r = talkSpokeMs / talkTotalMs
+    talkLevel = r > 0.25 ? 3 : r > 0.08 ? 2 : r > 0.01 ? 1 : 0
+    talkSpokeMs = 0; talkTotalMs = 0
+  }
+}
+const resetTalk = () => { talkLevel = 0; talkSpokeMs = 0; talkTotalMs = 0; talkLastTs = 0 }
 const ensureAudioCtx = () => {
   if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)()
   if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {})
@@ -701,9 +726,10 @@ const vadTick = () => {
     let sum = 0
     for (let i = 0; i < data.length; i++) { const v = (data[i] - 128) / 128; sum += v * v }
     const rms = Math.sqrt(sum / data.length)
+    const active = rms > 0.045    // ノイズ床より上を「話している」とみなすしきい値
+    if (uid === 'self') accumulateTalk(active)   // 自分の分はロビー向けの活発さにも積む
     const el = emojiEls.get(uid)
     if (!el) return
-    const active = rms > 0.045    // ノイズ床より上を「話している」とみなすしきい値
     el.style.transform = active ? 'scale(' + (1 + Math.min((rms - 0.045) * 4, 0.55)).toFixed(3) + ')' : 'scale(1)'
     el.parentElement.classList.toggle('speaking', active)
   })
@@ -850,7 +876,7 @@ $('leave').onclick = () => {
   ;[...audios.keys()].forEach(dropAudios)
   wantWake = false; if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null }
   peers.clear(); profiles.clear(); setCount(); profileAction = null
-  stopVad()        // 解析ループ停止＋AudioContext破棄（join が確保したものを全て解放）
+  stopVad(); resetTalk()   // 解析ループ停止＋AudioContext破棄（join が確保したものを全て解放）
   stopHeartbeat()  // ロビーへ「退出した」を通知＋定期発信を停止（ロビー部屋自体は閲覧用に残す）
   if (growTimer) { clearInterval(growTimer); growTimer = null }   // 成長の時間加算を停止
   renderGrow()
@@ -879,7 +905,7 @@ let lobbyRoom = null, lobbyPresence = null, heartbeatTimer = null
 const presences = new Map()  // 発信者peerId → {room, name, emoji, muted, stage, ts}
 
 const heartbeatPayload = () => joinedId
-  ? { room: joinedId, name: profile.name, emoji: profile.emoji, muted, stage: stageOf(), elapsed: mySeconds() }
+  ? { room: joinedId, name: profile.name, emoji: profile.emoji, muted, stage: stageOf(), elapsed: mySeconds(), talk: talkLevel }
   : { room: null }
 // 自分の発信は自分に返ってこないので、一人きりの部屋だと再描画の機会が無く継続時間が進まない。
 // 送信のたびに描き直して自分の部屋の表示も更新する（他人の部屋は相手のハートビートで更新される）。
@@ -915,15 +941,18 @@ const renderLobby = () => {
   // 部屋名 → 参加者[] に集約。自分は自分の発信を受け取らないので、通話中なら合成して足す。
   const byRoom = new Map()
   const push = (room, p) => { (byRoom.get(room) || byRoom.set(room, []).get(room)).push(p) }
-  presences.forEach(v => push(v.room, { name: v.name, emoji: v.emoji, muted: v.muted, stage: v.stage, elapsed: v.elapsed, ts: v.ts }))
-  if (joinedId) push(joinedId, { name: profile.name, emoji: profile.emoji, muted, stage: stageOf(), elapsed: mySeconds(), ts: Date.now() })
+  presences.forEach(v => push(v.room, { name: v.name, emoji: v.emoji, muted: v.muted, stage: v.stage, elapsed: v.elapsed, ts: v.ts, talk: v.talk }))
+  if (joinedId) push(joinedId, { name: profile.name, emoji: profile.emoji, muted, stage: stageOf(), elapsed: mySeconds(), ts: Date.now(), talk: talkLevel })
   list.replaceChildren()
   const names = [...byRoom.keys()].sort()
   status.textContent = names.length ? '' : 'いま通話中の部屋はありません'
   roomFloor.forEach((_, r) => { if (!byRoom.has(r)) roomFloor.delete(r) })   // 消えた部屋の記憶を捨てる
   names.forEach(room => {
     const people = byRoom.get(room)
-    const btn = document.createElement('button'); btn.className = 'room' + (room === joinedId ? ' here' : '')
+    // 活発さ＝その部屋の誰かが話していれば、その最大値。内側のリングの濃さで示す
+    const act = Math.max(0, ...people.map(p => p.talk || 0))
+    const btn = document.createElement('button')
+    btn.className = 'room' + (room === joinedId ? ' here' : '') + (act ? ' act' + act : '')
     const top = document.createElement('div'); top.className = 'room-top'
     const nm = document.createElement('span'); nm.className = 'room-name'; nm.textContent = '🏠 ' + room
     const ct = document.createElement('span'); ct.className = 'room-count'; ct.textContent = people.length + '人'
@@ -978,7 +1007,8 @@ const initLobby = async () => {
         emoji: String(d.emoji || '🙂').slice(0, 8), muted: !!d.muted,
         stage: String(d.stage || '').slice(0, 4), ts: Date.now(),
         // 相手が「その部屋に入ってからの秒数」。受信時刻(ts)を足して現在値に補正して使う
-        elapsed: Math.max(0, Math.min(Number(d.elapsed) || 0, 86400))
+        elapsed: Math.max(0, Math.min(Number(d.elapsed) || 0, 86400)),
+        talk: Math.max(0, Math.min(Math.round(Number(d.talk) || 0), 3))   // 活発さ 0〜3
       })
       renderLobby()
     }
