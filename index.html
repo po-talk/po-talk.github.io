@@ -185,9 +185,13 @@
     background:#0d1526; border:1px solid rgba(255,255,255,.09); border-radius:12px }
   .room:hover{ border-color:#00e5cc }
   .room.here{ border-color:#00e5cc; background:#0c2b2a }
+  /* 部屋名は1行に収め、はみ出したら「…」で省略する（長文を書く場所ではないので伸ばさない）。
+     人数は縮まず折り返さないよう固定（min-width:0 が無いと flex 要素は内容幅より縮まず人数を押し出す） */
   .room-top{ display:flex; align-items:center; gap:8px }
-  .room-name{ font-weight:700; font-size:15px }
-  .room-count{ margin-left:auto; color:#00e5cc; font-weight:700; font-size:13px }
+  .room-name{ font-weight:700; font-size:15px; min-width:0;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
+  .room-count{ margin-left:auto; flex:none; white-space:nowrap; color:#00e5cc; font-weight:700; font-size:13px }
+  .room-dur{ margin-top:4px; font-size:12px; color:#9fb0c7 }
   .room-people{ margin-top:8px; display:flex; flex-wrap:wrap; gap:6px }
   .rp{ display:inline-flex; align-items:center; gap:4px; background:#0a1830; padding:3px 9px; border-radius:999px; font-size:13px; color:#cfe0f0 }
   .rp.mut{ opacity:.5 }
@@ -318,7 +322,7 @@
 
   <details class="help-sec"><summary>できること</summary>
     <ul>
-      <li>🟢 ロビー：いま通話中の部屋が一覧で見える</li>
+      <li>🟢 ロビー：いま通話中の部屋が一覧で見える（続いている時間も）</li>
       <li>👥 参加者：名前・絵文字が出て、話している人の絵文字が跳ねる／ミュートも表示</li>
       <li>🌱 育てる：使うほどあなたの絵文字が成長（🌱→🌿→🌷→❓）</li>
     </ul>
@@ -327,7 +331,7 @@
   <details class="help-sec"><summary>しくみ・プライバシー</summary>
     <ul>
       <li>音声はブラウザ間で<b>直接</b>やりとり（サーバに録音・保存されません）</li>
-      <li>部屋名を知っている人は誰でも入れます。ロビーにも表示されます（＝内緒の部屋ではありません）</li>
+      <li>部屋名を知っている人は誰でも入れます。ロビーには<b>部屋名・参加者・どのくらい続いているか</b>が表示されます（＝内緒の部屋ではありません）</li>
       <li>アクセス数の測定に Cloudflare Web Analytics を使用（Cookie不使用・個人は特定しません）</li>
     </ul>
   </details>
@@ -455,6 +459,13 @@ const copyLink = async btn => {
 $('copyTop').onclick = () => copyLink($('copyTop'))
 $('copy').onclick    = () => copyLink($('copy'))
 
+// 部屋名は「識別子」なので途中で切ると別の部屋になる（＝ロビーからタップしても相手と繋がらない）。
+// **参加時と受信時で必ず同じ処理を通すこと**。表示上の省略は CSS の text-overflow に任せる（データは削らない）。
+// 上限の根拠は QRコード。日本語1文字はURLエンコードで9文字になるため、実測で
+// 20文字→57×57（読みやすい）/ 30文字→69×69（やや細かい）/ 60文字→93×93（かなり細かい）/
+// 255文字を超えると生成そのものが失敗する。実用的に読み取れる上限として30文字を採る。
+const ROOM_MAX = 30
+const capRoom = s => [...String(s)].slice(0, ROOM_MAX).join('')   // 絵文字を壊さないようコードポイント単位で切る
 const roomInput = $('room')
 roomInput.value = decodeURIComponent(location.hash.slice(1)) || ''
 
@@ -568,6 +579,10 @@ let room, myStream, muted = false, wantWake = false, wakeLock = null
 let leaving = null   // 進行中の退出処理（room.leave() は非同期）
 let lastRoom = null  // ゾンビroom検出用（下の「③ 部屋に参加」参照）
 let joinedId = null  // 参加中の部屋名（null＝未参加）
+// 参加した時刻。継続時間は「自分が入ってから何秒」という差分で交換する（端末ごとの時計ズレの
+// 影響を受けないため）。時刻合わせやスリープで巻き戻らないよう performance.now() を使う。
+let joinedAt = 0
+const mySeconds = () => joinedId ? Math.floor((performance.now() - joinedAt) / 1000) : 0
 let warn = ''        // 直近のピア単位エラー（誰とも繋がっていない時だけ表示）
 let profileAction = null   // 参加中だけ有効。ミュート状態の配信にも使う（#mute ハンドラ参照）
 const peers = new Set()
@@ -704,7 +719,7 @@ document.addEventListener('visibilitychange', () => {
 $('join').onclick = async () => {
   // 空欄のときは名前から作る（'lobby' に落とすと、その名前が #lobby としてURLに焼き付き、
   // 以後ハッシュ優先で自動命名が効かなくなって二度と抜けられなくなる）。名前も無ければ促して中止。
-  const roomId = roomInput.value.trim() || defaultRoom()
+  const roomId = capRoom(roomInput.value.trim() || defaultRoom())
   if (!roomId) {
     setState('部屋名を入れてください', 'warn')
     roomInput.focus()
@@ -790,7 +805,7 @@ $('join').onclick = async () => {
   }
 
   wantWake = true; wake()
-  joinedId = roomId; warn = ''; render(); renderMembers()
+  joinedId = roomId; joinedAt = performance.now(); warn = ''; render(); renderMembers()
   addAnalyser('self', myStream)   // 自分のマイク音量でも絵文字を跳ねさせる（ミュート中は無反応）
   startHeartbeat()                // ロビーへ自分の在室（部屋名・名前・絵文字）を定期発信
   renderLobby()                   // 自分の部屋を一覧に即反映（here ハイライト）
@@ -848,13 +863,34 @@ let lobbyRoom = null, lobbyPresence = null, heartbeatTimer = null
 const presences = new Map()  // 発信者peerId → {room, name, emoji, muted, stage, ts}
 
 const heartbeatPayload = () => joinedId
-  ? { room: joinedId, name: profile.name, emoji: profile.emoji, muted, stage: stageOf() }
+  ? { room: joinedId, name: profile.name, emoji: profile.emoji, muted, stage: stageOf(), elapsed: mySeconds() }
   : { room: null }
-const sendHeartbeat = () => { if (lobbyPresence) lobbyPresence.send(heartbeatPayload()).catch(() => {}) }
+// 自分の発信は自分に返ってこないので、一人きりの部屋だと再描画の機会が無く継続時間が進まない。
+// 送信のたびに描き直して自分の部屋の表示も更新する（他人の部屋は相手のハートビートで更新される）。
+const sendHeartbeat = () => { if (lobbyPresence) { lobbyPresence.send(heartbeatPayload()).catch(() => {}); renderLobby() } }
 const startHeartbeat = () => { sendHeartbeat(); if (!heartbeatTimer) heartbeatTimer = setInterval(sendHeartbeat, HEARTBEAT_MS) }
 const stopHeartbeat = () => {
   if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null }
   if (lobbyPresence) lobbyPresence.send({ room: null }).catch(() => {})  // 「退出した」を明示（joinedId のクリア順に依存しない）
+}
+
+// 部屋の継続時間。その部屋にいる全員のうち「一番長くいる人の滞在時間」＝部屋が始まってからの時間。
+// 最古の人が抜けると max が次点に落ちて数字が巻き戻るので、部屋ごとに最大値を覚えて減らさない。
+// 部屋が一覧から消えたら（＝全員退出）その記憶も捨て、次に立った時は0から数え直す。
+const roomFloor = new Map()   // 部屋名 → これまでに見た最長の継続秒数
+const roomSeconds = (room, people) => {
+  const now = Date.now()
+  const live = Math.max(0, ...people.map(p => p.elapsed == null ? 0 : p.elapsed + (p.ts ? (now - p.ts) / 1000 : 0)))
+  const kept = Math.max(live, roomFloor.get(room) || 0)
+  roomFloor.set(room, kept)
+  return Math.floor(kept)
+}
+const fmtDuration = sec => {
+  const m = Math.floor(sec / 60)
+  if (m < 1) return 'いま開いたばかり'
+  if (m < 60) return m + '分'
+  const h = Math.floor(m / 60), rm = m % 60
+  return rm ? h + '時間' + rm + '分' : h + '時間'
 }
 
 const renderLobby = () => {
@@ -863,11 +899,12 @@ const renderLobby = () => {
   // 部屋名 → 参加者[] に集約。自分は自分の発信を受け取らないので、通話中なら合成して足す。
   const byRoom = new Map()
   const push = (room, p) => { (byRoom.get(room) || byRoom.set(room, []).get(room)).push(p) }
-  presences.forEach(v => push(v.room, { name: v.name, emoji: v.emoji, muted: v.muted, stage: v.stage }))
-  if (joinedId) push(joinedId, { name: profile.name, emoji: profile.emoji, muted, stage: stageOf() })
+  presences.forEach(v => push(v.room, { name: v.name, emoji: v.emoji, muted: v.muted, stage: v.stage, elapsed: v.elapsed, ts: v.ts }))
+  if (joinedId) push(joinedId, { name: profile.name, emoji: profile.emoji, muted, stage: stageOf(), elapsed: mySeconds(), ts: Date.now() })
   list.replaceChildren()
   const names = [...byRoom.keys()].sort()
   status.textContent = names.length ? '' : 'いま通話中の部屋はありません'
+  roomFloor.forEach((_, r) => { if (!byRoom.has(r)) roomFloor.delete(r) })   // 消えた部屋の記憶を捨てる
   names.forEach(room => {
     const people = byRoom.get(room)
     const btn = document.createElement('button'); btn.className = 'room' + (room === joinedId ? ' here' : '')
@@ -875,6 +912,8 @@ const renderLobby = () => {
     const nm = document.createElement('span'); nm.className = 'room-name'; nm.textContent = '🏠 ' + room
     const ct = document.createElement('span'); ct.className = 'room-count'; ct.textContent = people.length + '人'
     top.append(nm, ct)
+    const dur = document.createElement('div'); dur.className = 'room-dur'
+    dur.textContent = '⏱ ' + fmtDuration(roomSeconds(room, people))
     const ppl = document.createElement('div'); ppl.className = 'room-people'
     people.forEach(p => {
       const rp = document.createElement('span'); rp.className = 'rp' + (p.muted ? ' mut' : '')
@@ -882,7 +921,7 @@ const renderLobby = () => {
       const n = document.createElement('span'); n.textContent = (p.name || 'ゲスト') + (p.stage ? ' ' + p.stage : '') + (p.muted ? ' 🔇' : '')
       rp.append(e, n); ppl.append(rp)
     })
-    btn.append(top, ppl)
+    btn.append(top, dur, ppl)
     btn.onclick = () => selectRoom(room)
     list.append(btn)
   })
@@ -919,9 +958,11 @@ const initLobby = async () => {
     lobbyPresence.onMessage = (d, { peerId }) => {
       if (!d || d.room == null) presences.delete(peerId)
       else presences.set(peerId, {
-        room: String(d.room).slice(0, 40), name: String(d.name || '').slice(0, 20),
+        room: capRoom(d.room), name: String(d.name || '').slice(0, 20),
         emoji: String(d.emoji || '🙂').slice(0, 8), muted: !!d.muted,
-        stage: String(d.stage || '').slice(0, 4), ts: Date.now()
+        stage: String(d.stage || '').slice(0, 4), ts: Date.now(),
+        // 相手が「その部屋に入ってからの秒数」。受信時刻(ts)を足して現在値に補正して使う
+        elapsed: Math.max(0, Math.min(Number(d.elapsed) || 0, 86400))
       })
       renderLobby()
     }
