@@ -185,6 +185,9 @@
   .lobby{ width:100%; max-width:440px; background:rgba(255,255,255,.04);
     border:1px solid rgba(255,255,255,.09); border-radius:18px; padding:22px }
   .lobby h2{ margin:0 0 10px; font-size:17px }
+  .lobby-head{ display:flex; align-items:center; gap:10px; margin-bottom:10px }
+  .lobby-head h2{ margin:0 }
+  .lobby-head .retry-btn{ margin-left:auto }
   .lobby-status{ font-size:13px; color:#9fb0c7; margin-bottom:12px }
   .lobby-note{ margin:12px 0 0; font-size:12px; color:#6f7f96; line-height:1.6 }
   .legal{ width:100%; max-width:900px; margin:20px auto 0; text-align:center; font-size:11px; color:#5f6f86; line-height:1.7 }
@@ -310,7 +313,10 @@
 </div>
 
 <aside class="lobby">
-  <h2>🟢 通話中の部屋</h2>
+  <div class="lobby-head">
+    <h2>🟢 通話中の部屋</h2>
+    <button id="lobbyRefresh" class="retry-btn" type="button">🔄 更新</button>
+  </div>
   <div class="lobby-status" id="lobbyStatus">🛰 ロビーに接続中…</div>
   <div class="lobby-list" id="lobbyList"></div>
   <p class="lobby-note">部屋をタップするとそのまま入室します。通話中は確認のうえ移動します。</p>
@@ -1020,7 +1026,10 @@ const renderLobby = () => {
   if (joinedId) push(joinedId, { name: profile.name, emoji: profile.emoji, muted, stage: stageOf(), elapsed: mySeconds(), ts: Date.now(), talk: talkLevel })
   list.replaceChildren()
   const names = [...byRoom.keys()].sort()
-  status.textContent = names.length ? '' : 'いま通話中の部屋はありません'
+  // ロビーに入った直後はまだ誰も見つけていないだけなので「ありません」と断定しない。
+  // 相手の発見（Nostrでの合流＋WebRTCの確立）に数秒かかるため、その間は探索中と出す。
+  status.textContent = names.length ? ''
+    : (Date.now() - lobbySince < DISCOVER_MS ? '🛰 通話中の部屋を探しています…' : 'いま通話中の部屋はありません')
   roomFloor.forEach((_, r) => { if (!byRoom.has(r)) roomFloor.delete(r) })   // 消えた部屋の記憶を捨てる
   names.forEach(room => {
     const people = byRoom.get(room)
@@ -1062,8 +1071,30 @@ const selectRoom = room => {
   $('join').onclick()      // そのまま入室。参加の⓪で leaving を待つので、部屋移動でも取りこぼさない
 }
 
-const initLobby = async () => {
+const DISCOVER_MS = 8000     // この間は「探しています」と出す（発見に数秒かかるため）
+let lobbySince = 0           // ロビーに入り直した時刻
+let lobbySweep = null        // 取りこぼし掃除のタイマー（入り直しで二重に走らせない）
+let lobbyBusy = false
+
+// again=true は「更新」ボタン用：今のロビー接続を捨てて入り直す。相手側の onPeerJoin が発火して
+// 在室が即座に送られてくるので、取りこぼした部屋を拾い直せる。TURN資格情報も取り直す
+// （期限切れだとロビーの相手と繋がれず、部屋が一つも出てこない状態になりうるため）。
+const initLobby = async (again = false) => {
+  if (lobbyBusy) return
+  lobbyBusy = true
+  $('lobbyRefresh').disabled = true
   const status = $('lobbyStatus')
+  try {
+    await openLobby(again, status)
+  } finally {
+    lobbyBusy = false
+    // 連打対策。入り直すたびに発見がやり直しになるので、見つからなくて焦って押し続けると
+    // かえって出てこなくなる。少しの間は押せないようにして、探す時間を確保する。
+    setTimeout(() => { $('lobbyRefresh').disabled = false }, 2500)
+  }
+}
+
+const openLobby = async (again, status) => {
   let joinRoom
   try {
     ({ joinRoom } = await loadTrystero())
@@ -1071,8 +1102,14 @@ const initLobby = async () => {
     status.textContent = '⚠️ ロビーを読み込めませんでした（通話は使えます）'; return
   }
   let ice = null
-  try { ice = await loadIce() } catch {}
+  try { ice = await loadIce(again) } catch {}
   try {
+    // 入り直しの前に、前の接続と掃除タイマーを必ず片付ける（放置すると多重に走る）
+    if (lobbySweep) { clearInterval(lobbySweep); lobbySweep = null }
+    if (lobbyRoom) { const old = lobbyRoom; lobbyRoom = null; lobbyPresence = null; try { await old.leave() } catch {} }
+    presences.clear()
+    status.textContent = '🛰 ロビーに接続中…'
+    lobbySince = Date.now()
     lobbyRoom = joinRoom(trysteroConfig(ice), LOBBY_ROOM)
     lobbyPresence = lobbyRoom.makeAction('presence')
     lobbyPresence.onMessage = (d, { peerId }) => {
@@ -1091,16 +1128,19 @@ const initLobby = async () => {
     lobbyRoom.onPeerJoin = () => { if (joinedId) sendHeartbeat() }
     lobbyRoom.onPeerLeave = peerId => { presences.delete(peerId); renderLobby() }
     // 取りこぼし対策：一定時間更新の無い相手を掃除
-    setInterval(() => {
+    lobbySweep = setInterval(() => {
       const cut = Date.now() - STALE_MS; let changed = false
       presences.forEach((v, k) => { if (v.ts < cut) { presences.delete(k); changed = true } })
       if (changed) renderLobby()
     }, HEARTBEAT_MS)
+    if (joinedId) sendHeartbeat()   // 通話中に入り直したら、自分の在室をすぐ出し直す
     renderLobby()
+    setTimeout(renderLobby, DISCOVER_MS + 200)   // 探索中の表示を「ありません」に切り替えるため
   } catch {
     status.textContent = '⚠️ ロビーに接続できませんでした'
   }
 }
+$('lobbyRefresh').onclick = () => initLobby(true)
 initLobby()
 // 招待リンクの初期表示。joinedId の宣言より後で呼ぶ必要があるのでここに置いている
 // （syncShare は joinedId を参照するため、宣言前に呼ぶと TDZ で落ちる）
