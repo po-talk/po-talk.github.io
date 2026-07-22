@@ -112,6 +112,11 @@
   #copy{ background:#1d2740; color:#cfe; margin-top:8px; padding:10px; font-size:14px }
   #qr{ background:#1d2740; color:#cfe; margin-top:8px; padding:10px; font-size:14px }
   .status{ margin-top:18px; padding:14px; border-radius:10px; background:#0d1526; font-size:14px; line-height:1.7 }
+  /* 状態表示の右に「つなぎ直す」。共通の button{width:100%} を打ち消して小さなチップにする */
+  .status-head{ display:flex; align-items:flex-start; gap:8px }
+  .retry-btn{ flex:none; width:auto; margin:0 0 0 auto; padding:5px 11px; font-size:12px; font-weight:700;
+    background:#1d2740; color:#cfe; border:1px solid rgba(255,255,255,.12); border-radius:999px; white-space:nowrap }
+  .retry-btn:disabled{ opacity:.5 }
   /* 状態はこのドットの色だけで表す（文字側に絵文字は置かない）。既定＝グレー＝未参加／退出後 */
   .dot{ display:inline-block; width:9px; height:9px; border-radius:50%; background:#48507a; margin-right:7px; vertical-align:middle }
   .dot.busy { background:#4da3ff; animation:dot-pulse 1.2s ease-in-out infinite }  /* 準備中 */
@@ -284,7 +289,10 @@
   </div>
 
   <div class="status">
-    <div><span class="dot" id="dot"></span><span id="state">未参加</span></div>
+    <div class="status-head">
+      <span><span class="dot" id="dot"></span><span id="state">未参加</span></span>
+      <button id="retry" class="retry-btn" type="button" hidden>🔄 つなぎ直す</button>
+    </div>
     <div style="margin-top:8px">接続中の相手：<span class="peers" id="count">0</span> 人</div>
     <div id="members" class="members"></div>
     <div style="margin-top:10px" id="shareWrap" hidden>
@@ -627,8 +635,19 @@ const TRYSTERO_BASE = {
 // このアプリはリンクも音声も通さず"合鍵を受け取るだけ"）。読込時に一度取得してキャッシュ、失敗時は
 // STUNのみにフォールバック（直結できるペアは繋がる）。
 const TURN_WORKER_URL = 'https://pot-turn.itsuma-kuramoto.workers.dev/'
-let icePromise = null
-const loadIce = () => (icePromise ??= fetch(TURN_WORKER_URL).then(r => r.json()).then(d => d.iceServers).catch(e => { icePromise = null; throw e }))
+// 資格情報は短命なので、取得したきり永久に使い回すと期限切れのまま繋ぎに行くことになる
+// （＝TURN認証に失敗して中継が使えない。入退出しても直らず、リロードだけで直るのはこれが理由）。
+// 一定時間で取り直し、「つなぎ直す」からは force で即座に取り直す。
+const ICE_TTL_MS = 10 * 60 * 1000
+let icePromise = null, iceFetchedAt = 0
+const loadIce = (force = false) => {
+  if (force || !icePromise || Date.now() - iceFetchedAt > ICE_TTL_MS) {
+    iceFetchedAt = Date.now()
+    icePromise = fetch(TURN_WORKER_URL).then(r => r.json()).then(d => d.iceServers)
+      .catch(e => { icePromise = null; throw e })   // 失敗は握らず次回リトライできるようにする
+  }
+  return icePromise
+}
 // 取得できた iceServers を rtcConfig に載せた最終設定を返す（未取得なら Trystero 既定＝STUNのみ）
 const trysteroConfig = ice => ice ? { ...TRYSTERO_BASE, rtcConfig: { iceServers: ice } } : TRYSTERO_BASE
 // ライブラリ読込は一度だけ。ロビー（ページ読込時）と参加（ボタン押下時）で共有する。
@@ -857,6 +876,7 @@ $('join').onclick = async () => {
   saveStats(); renderGrow()
   growTimer = setInterval(() => { stats.seconds += 30; saveStats(); renderGrow(); renderMembers() }, 30000)
   $('join').style.display = 'none'; $('mute').style.display = 'block'; $('leave').style.display = 'block'
+  $('retry').hidden = false
   roomInput.disabled = true; lockProfile(true)
   // 通話中は名前も部屋名も変えられないので、入力欄ごと畳む（名前は参加者リスト、部屋名は状態表示に出ている）
   $('setupFields').classList.add('collapsed')
@@ -868,6 +888,35 @@ $('mute').onclick = () => {
   if (profileAction) profileAction.send(myProfilePayload()).catch(() => {})  // 全員へミュート状態を配信
   sendHeartbeat()  // ロビーの自分にもミュート状態を反映
   renderMembers(); renderLobby()  // 自分の行／ロビーの 🔇 を即反映
+}
+
+// つなぎ直す：手動の「退出→参加」を1操作にまとめたもの。ただの再参加と違い、TURNの資格情報を
+// 取り直してから入り直す（期限切れのまま入り直しても直らないため。リロードで直るのと同じ状態を作る）。
+// ミュートしていた人が勝手に解除されないよう、状態を持ち越す。
+// 参加中の見た目を「未参加」に戻す一式。退出時と、つなぎ直しに失敗して参加できなかった時に使う。
+const resetJoinedUI = () => {
+  $('join').style.display = 'block'; $('mute').style.display = 'none'; $('leave').style.display = 'none'; $('unlock').style.display = 'none'
+  $('retry').hidden = true
+  roomInput.disabled = false; lockProfile(false)
+  $('setupFields').classList.remove('collapsed')   // join で畳んだ入力欄を戻す
+}
+
+let retrying = false
+$('retry').onclick = async () => {
+  if (retrying || !joinedId) return
+  retrying = true
+  const btn = $('retry'), wasMuted = muted
+  btn.disabled = true
+  try {
+    try { await loadIce(true) } catch {}   // 取れなくてもSTUNのみで続行（今より悪くはならない）
+    $('leave').onclick()
+    await $('join').onclick()              // 参加の⓪が退出の完了を待つので取りこぼさない
+    if (wasMuted && !muted && joinedId) $('mute').onclick()
+  } finally {
+    retrying = false
+    btn.disabled = false
+    if (!joinedId) resetJoinedUI()   // 入り直せなかった時は、退出時に飛ばした見た目の復帰をここで行う
+  }
 }
 
 $('leave').onclick = () => {
@@ -884,9 +933,9 @@ $('leave').onclick = () => {
   muted = false; $('mute').textContent = '🔇 ミュート'
   resetQr()   // QRトグルを畳んでおく（次の参加で古いリンクを残さない）
   setState('退出しました', 'idle')
-  $('join').style.display = 'block'; $('mute').style.display = 'none'; $('leave').style.display = 'none'; $('unlock').style.display = 'none'
-  roomInput.disabled = false; lockProfile(false)
-  $('setupFields').classList.remove('collapsed')   // join で畳んだ入力欄を戻す
+  // つなぎ直しの途中は「未参加の見た目」に戻さない。すぐ入り直すので、入力欄が一瞬開いて閉じたり
+  // ボタンが入れ替わってちらつくのを避ける（join に失敗したときは retry 側が責任を持って戻す）。
+  if (!retrying) resetJoinedUI()
 
   // UIは即座に戻すが、実際の退出は非同期に続く。次の参加はこれの完了を待つ（⓪参照）。
   // 失敗しても再参加を塞がないよう握りつぶす（掴んだ場合は上のゾンビ検出が拾う）。
