@@ -95,6 +95,10 @@
   .qr-img svg{ width:min(60vw,200px); height:auto; display:block }
   .qr-room{ margin-top:8px; text-align:center; font-size:13px; color:#cfe0f0; word-break:break-all }
   label{ display:block; font-size:13px; color:#9fb0c7; margin:14px 0 6px }
+  /* 文字数カウンタ：ラベルの右端に添える。上限超過は色で知らせる（超えた分は参加時に切られるため） */
+  .label-row{ display:flex; align-items:baseline; justify-content:space-between; gap:8px }
+  .char-count{ font-size:12px; color:#6f7f96; font-variant-numeric:tabular-nums }
+  .char-count.over{ color:#ffd24d; font-weight:700 }
   input{ width:100%; padding:12px 14px; border-radius:10px; border:1px solid rgba(255,255,255,.12);
     background:#0d1526; color:#eef2f8; font-size:16px }
   button{ width:100%; margin-top:12px; padding:14px; border:0; border-radius:12px; font-size:16px; font-weight:700; cursor:pointer }
@@ -261,7 +265,7 @@
   </details>
 
   <div id="roomField">
-    <label for="room">部屋名</label>
+    <label for="room" class="label-row">部屋名<span id="roomCount" class="char-count"></span></label>
     <input id="room" placeholder="◯◯の部屋" autocomplete="off">
   </div>
   </div></div>
@@ -467,7 +471,18 @@ $('copy').onclick    = () => copyLink($('copy'))
 const ROOM_MAX = 30
 const capRoom = s => [...String(s)].slice(0, ROOM_MAX).join('')   // 絵文字を壊さないようコードポイント単位で切る
 const roomInput = $('room')
+// 文字数カウンタ。絵文字を1文字と数えるためコードポイント単位で数える（capRoom と同じ数え方）。
+// value への代入では input イベントが飛ばないので、値を書き換えた箇所では必ずこれを呼ぶこと。
+const syncRoomCount = () => {
+  const n = [...roomInput.value].length
+  const el = $('roomCount')
+  el.textContent = n ? n + ' / ' + ROOM_MAX : ''
+  el.classList.toggle('over', n > ROOM_MAX)
+  el.title = n > ROOM_MAX ? '参加すると ' + ROOM_MAX + ' 文字までに切り詰められます' : ''
+}
+roomInput.addEventListener('input', syncRoomCount)
 roomInput.value = decodeURIComponent(location.hash.slice(1)) || ''
+syncRoomCount()
 
 // プロフィール（名前・アバター絵文字）— ブラウザに保存し次回も引き継ぐ。
 // いまは自分の設定を保持するだけ。相手への送信・参加者リスト表示は次の段階で足す。
@@ -498,6 +513,7 @@ const applyAutoRoom = () => {
   if (roomInput.value === '' || roomInput.value === lastAutoRoom) {
     lastAutoRoom = defaultRoom()
     roomInput.value = lastAutoRoom
+    syncRoomCount()
   }
 }
 nameInput.oninput = () => { profile.name = nameInput.value.trim(); saveProfile(); applyAutoRoom(); renderProfileSummary() }
@@ -725,7 +741,7 @@ $('join').onclick = async () => {
     roomInput.focus()
     return
   }
-  roomInput.value = roomId          // 補った名前を入力欄にも反映する
+  roomInput.value = roomId; syncRoomCount()   // 補った／切り詰めた名前を入力欄にも反映する
   location.hash = encodeURIComponent(roomId)
   $('share').textContent = location.href; $('share').href = location.href; $('shareWrap').hidden = false
 
@@ -938,7 +954,7 @@ const selectRoom = room => {
   } else {
     if (!confirm('「' + room + '」に参加しますか？')) return   // 未参加時のミスタップ防止
   }
-  roomInput.value = room
+  roomInput.value = room; syncRoomCount()
   $('join').onclick()      // そのまま入室。参加の⓪で leaving を待つので、部屋移動でも取りこぼさない
 }
 
