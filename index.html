@@ -174,7 +174,7 @@
      空・下・中・上の4段階がそのまま出せる（⠀⠤⠶⠿）。通話中だけ表示、装飾なので aria-hidden。 */
   .eq{ margin-top:12px; font-family:'Courier New',ui-monospace,monospace; font-size:20px;
     line-height:1; letter-spacing:3px; color:#00e5cc; text-shadow:0 0 7px rgba(0,229,204,.45);
-    white-space:nowrap; overflow:hidden; user-select:none }
+    white-space:nowrap; overflow:hidden; user-select:none; text-align:center }
   .member{ display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:10px; background:#0d1526;
     transition:background .12s, box-shadow .12s }
   .member.speaking{ background:#0c2b2a; box-shadow:0 0 0 1px #00e5cc inset }
@@ -806,13 +806,17 @@ const eqBarHeight = level => {
   const jitter = (Math.random() - 0.25) * (1 + level * 2)   // 揺れ幅も音量で増える
   return Math.max(0, Math.min(3, Math.round(level * 3 * 0.55 + jitter)))
 }
-// グリフの送り幅はフォント依存なので、20個並べて実測 → 幅いっぱいに入る本数を出す（端で欠けない）
+// グリフの送り幅はフォント依存なので実測して幅いっぱいの本数を出す（端で欠けない）。
+// #eq 自身に文字を入れて scrollWidth を測ると、中身が箱より狭いとき箱幅にクランプされて
+// 過大評価になる（＝本数が足りなくなる）。箱に縛られない絶対配置のプローブで測る。
 const measureEqBars = () => {
   const el = $('eq'); if (el.hidden || !el.clientWidth) return
-  const prev = el.textContent
-  el.textContent = '⠿'.repeat(20)
-  const adv = el.scrollWidth / 20
-  el.textContent = prev
+  const probe = document.createElement('span')
+  probe.style.cssText = 'position:absolute;left:-9999px;top:0;white-space:nowrap;visibility:hidden'
+  probe.textContent = '⠿'.repeat(20)   // 親(el)に入れるのでフォント・字間を継承する
+  el.appendChild(probe)
+  const adv = probe.getBoundingClientRect().width / 20
+  el.removeChild(probe)
   if (adv > 0) eqBars = Math.max(6, Math.floor(el.clientWidth / adv))
 }
 const drawEq = () => {
