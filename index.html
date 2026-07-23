@@ -170,6 +170,11 @@
   .profile.locked > summary{ opacity:.5; pointer-events:none }
   /* 参加者リスト（絵文字＋名前） */
   .members{ margin-top:12px; display:flex; flex-direction:column; gap:6px }
+  /* 点字ブロック（U+2800〜）で作るオーディオEQ風の飾り。各セルが2×3ドットなので
+     空・下・中・上の4段階がそのまま出せる（⠀⠤⠶⠿）。通話中だけ表示、装飾なので aria-hidden。 */
+  .eq{ margin-top:12px; font-family:'Courier New',ui-monospace,monospace; font-size:20px;
+    line-height:1; letter-spacing:3px; color:#00e5cc; text-shadow:0 0 7px rgba(0,229,204,.45);
+    white-space:nowrap; overflow:hidden; user-select:none }
   .member{ display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:10px; background:#0d1526;
     transition:background .12s, box-shadow .12s }
   .member.speaking{ background:#0c2b2a; box-shadow:0 0 0 1px #00e5cc inset }
@@ -209,7 +214,9 @@
   .room-name{ font-weight:700; font-size:15px; min-width:0;
     white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
   .room-count{ margin-left:auto; flex:none; white-space:nowrap; color:#00e5cc; font-weight:700; font-size:13px }
-  .room-dur{ margin-top:4px; font-size:12px; color:#9fb0c7 }
+  .room-dur{ margin-top:4px; font-size:12px; color:#9fb0c7; display:flex; align-items:center; gap:8px }
+  .room-eq{ margin-left:auto; font-family:'Courier New',ui-monospace,monospace; font-size:15px;
+    line-height:1; letter-spacing:1px; color:#00e5cc; text-shadow:0 0 6px rgba(0,229,204,.4) }
   .room-people{ margin-top:8px; display:flex; flex-wrap:wrap; gap:6px }
   .rp{ display:inline-flex; align-items:center; gap:4px; background:#0a1830; padding:3px 9px; border-radius:999px; font-size:13px; color:#cfe0f0 }
   .rp.mut{ opacity:.5 }
@@ -298,6 +305,7 @@
     </div>
     <div style="margin-top:8px">接続中の相手：<span class="peers" id="count">0</span> 人</div>
     <div id="members" class="members"></div>
+    <div id="eq" class="eq" hidden aria-hidden="true"></div>
     <div style="margin-top:10px" id="shareWrap" hidden>
       <div id="qrBox" class="qr-inline" hidden>
         <div id="qrImg" class="qr-img">生成中…</div>
@@ -769,12 +777,15 @@ const stopVad = () => {
   analysers.forEach((_, uid) => removeAnalyser(uid))
   if (audioCtx) { audioCtx.close().catch(() => {}); audioCtx = null }
 }
+let roomRms = 0   // 部屋の中でいちばん大きい音量（EQの高さを駆動する）。速く上がり・ゆっくり下がる
 const vadTick = () => {
+  let peak = 0
   analysers.forEach(({ analyser, data }, uid) => {
     analyser.getByteTimeDomainData(data)
     let sum = 0
     for (let i = 0; i < data.length; i++) { const v = (data[i] - 128) / 128; sum += v * v }
     const rms = Math.sqrt(sum / data.length)
+    peak = Math.max(peak, rms)
     const active = rms > 0.045    // ノイズ床より上を「話している」とみなすしきい値
     if (uid === 'self') accumulateTalk(active)   // 自分の分はロビー向けの活発さにも積む
     const el = emojiEls.get(uid)
@@ -782,8 +793,52 @@ const vadTick = () => {
     el.style.transform = active ? 'scale(' + (1 + Math.min((rms - 0.045) * 4, 0.55)).toFixed(3) + ')' : 'scale(1)'
     el.parentElement.classList.toggle('speaking', active)
   })
+  roomRms = peak > roomRms ? peak : roomRms * 0.82 + peak * 0.18   // アタック速く／ディケイ遅く
   vadRAF = analysers.size ? requestAnimationFrame(vadTick) : null
 }
+
+// ─ 点字EQ（飾り）─ 部屋全体の音量（roomRms＝参加者の中の最大）で高さが上がり、バーごとにランダムに揺れる。
+// 静かでも下段がチラつく。本数は #eq の幅いっぱいに合わせて実測で決める（半端に切れないように）。
+const EQ_GLYPH = ['⠀', '⠤', '⠶', '⠿']   // 空 / 下2点 / 下+中 / 全6点
+let eqTimer = null, eqBars = 14
+const eqLevel = () => Math.min(roomRms / 0.15, 1)   // rms を 0〜1 に。0.15 くらいで振り切る
+const eqBarHeight = level => {
+  const jitter = (Math.random() - 0.25) * (1 + level * 2)   // 揺れ幅も音量で増える
+  return Math.max(0, Math.min(3, Math.round(level * 3 * 0.55 + jitter)))
+}
+// グリフの送り幅はフォント依存なので、20個並べて実測 → 幅いっぱいに入る本数を出す（端で欠けない）
+const measureEqBars = () => {
+  const el = $('eq'); if (el.hidden || !el.clientWidth) return
+  const prev = el.textContent
+  el.textContent = '⠿'.repeat(20)
+  const adv = el.scrollWidth / 20
+  el.textContent = prev
+  if (adv > 0) eqBars = Math.max(6, Math.floor(el.clientWidth / adv))
+}
+const drawEq = () => {
+  const level = Math.max(0.12, eqLevel())   // 静音時も 0.12 の下限で下段がチラチラする
+  let s = ''
+  for (let i = 0; i < eqBars; i++) s += EQ_GLYPH[eqBarHeight(level)]
+  $('eq').textContent = s
+}
+const startEq = () => {
+  $('eq').hidden = false
+  measureEqBars()
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) {   // アニメを止める設定なら静止表示
+    $('eq').textContent = EQ_GLYPH[1].repeat(eqBars); return
+  }
+  if (!eqTimer) eqTimer = setInterval(drawEq, 90)   // ~11fps でカクッと動く＝EQらしい
+}
+const stopEq = () => {
+  if (eqTimer) { clearInterval(eqTimer); eqTimer = null }
+  roomRms = 0; $('eq').hidden = true; $('eq').textContent = ''
+}
+// 画面幅が変わったら本数を測り直す（回転・リサイズ）。静止表示中なら即反映する
+addEventListener('resize', () => {
+  if ($('eq').hidden) return
+  measureEqBars()
+  if (!eqTimer) $('eq').textContent = EQ_GLYPH[1].repeat(eqBars)
+})
 
 // 表示は「実際に繋がっている人数」から導く。
 // 繋がってさえいれば、幽霊ピアのハンドシェイク失敗などは表に出さない。
@@ -899,6 +954,7 @@ $('join').onclick = async () => {
   joinedId = roomId; joinedAt = performance.now(); warn = ''; render(); renderMembers()
   syncShare()   // joinedId が入ったのでラベルを「共有リンク」に切り替える（冒頭の呼び出しは未参加のまま）
   addAnalyser('self', myStream)   // 自分のマイク音量でも絵文字を跳ねさせる（ミュート中は無反応）
+  startEq()                       // 点字EQの飾りを開始（音量で下から伸びる）
   startHeartbeat()                // ロビーへ自分の在室（部屋名・名前・絵文字）を定期発信
   renderLobby()                   // 自分の部屋を一覧に即反映（here ハイライト）
   // 成長：参加回数と「使った日数」を加算し、通話中は30秒ごとに時間を貯める
@@ -956,7 +1012,7 @@ $('leave').onclick = () => {
   ;[...audios.keys()].forEach(dropAudios)
   wantWake = false; if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null }
   peers.clear(); profiles.clear(); setCount(); profileAction = null
-  stopVad(); resetTalk()   // 解析ループ停止＋AudioContext破棄（join が確保したものを全て解放）
+  stopVad(); resetTalk(); stopEq()   // 解析ループ停止＋AudioContext破棄（join が確保したものを全て解放）
   stopHeartbeat()  // ロビーへ「退出した」を通知＋定期発信を停止（ロビー部屋自体は閲覧用に残す）
   if (growTimer) { clearInterval(growTimer); growTimer = null }   // 成長の時間加算を停止
   renderGrow()
@@ -1016,6 +1072,33 @@ const fmtDuration = sec => {
   return rm ? h + '時間' + rm + '分' : h + '時間'
 }
 
+// ─ ロビーの各部屋カードに付ける小さな点字EQ ─ 実音声ではなく活発さ(talk 0〜3)から作るランダム表示。
+// 点字セルは左右の列が独立なので、1文字＝2本のバー。2文字で4本。片列だけ伸ばせるので密度が出る。
+const EQ_CELL_L = [0, 0x04, 0x06, 0x07]   // 左列を下から h 段ぶん（空/下/下中/全）
+const EQ_CELL_R = [0, 0x20, 0x30, 0x38]   // 右列を下から h 段ぶん
+const eqCell = (l, r) => String.fromCodePoint(0x2800 + EQ_CELL_L[l] + EQ_CELL_R[r])
+const LOBBY_EQ_CELLS = 2
+const EQ_REDUCE = matchMedia('(prefers-reduced-motion: reduce)').matches
+const lobbyBarH = level => {
+  // level を二乗して低域をぐっと沈める＋揺れ幅も level に比例。無言(act0)はほぼ静止、
+  // 盛り上がるほど背が高く暴れる。「一番下のステータスは落ち着いて」欲しいので下向きバイアス強め。
+  const base = level * level * 3
+  const jitter = (Math.random() - 0.35) * (0.8 + level * 1.8)
+  return Math.max(0, Math.min(3, Math.round(base + jitter)))
+}
+const lobbyEqFrame = act => {
+  const lv = act / 3
+  if (EQ_REDUCE) return eqCell(act, act).repeat(LOBBY_EQ_CELLS)   // 動かさない設定なら活発さで固定
+  let s = ''
+  for (let i = 0; i < LOBBY_EQ_CELLS; i++) s += eqCell(lobbyBarH(lv), lobbyBarH(lv))  // 左右バラバラに揺らす
+  return s
+}
+// 一覧は5秒ごとにしか作り直さないので、EQだけは別タイマーで各カードのspanを直接書き替えて動かす
+if (!EQ_REDUCE) setInterval(() => {
+  if (document.hidden) return   // 裏に回っている間は描かない（電池）
+  document.querySelectorAll('.room-eq').forEach(el => { el.textContent = lobbyEqFrame(+el.dataset.act || 0) })
+}, 150)
+
 const renderLobby = () => {
   const list = $('lobbyList'), status = $('lobbyStatus')
   if (!lobbyRoom) return  // 接続前は初期メッセージのまま
@@ -1042,7 +1125,12 @@ const renderLobby = () => {
     const ct = document.createElement('span'); ct.className = 'room-count'; ct.textContent = people.length + '人'
     top.append(nm, ct)
     const dur = document.createElement('div'); dur.className = 'room-dur'
-    dur.textContent = '⏱ ' + fmtDuration(roomSeconds(room, people))
+    const durText = document.createElement('span')
+    durText.textContent = '⏱ ' + fmtDuration(roomSeconds(room, people))
+    const eq = document.createElement('span'); eq.className = 'room-eq'
+    eq.dataset.act = act                 // 活発さ(0〜3)をEQの高さの元にする。実音声ではなくランダム
+    eq.textContent = lobbyEqFrame(act)   // 初期フレーム（次のtickまで空にならないように）
+    dur.append(durText, eq)
     const ppl = document.createElement('div'); ppl.className = 'room-people'
     people.forEach(p => {
       const rp = document.createElement('span'); rp.className = 'rp' + (p.muted ? ' mut' : '')
