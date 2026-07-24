@@ -43,14 +43,15 @@
   <header style="display:flex;flex-direction:column;gap:8px">
     <h1>🦞 ライブ中バナー<span class="exp">ぽっと通話</span></h1>
     <p class="lead">自分の部屋が<b>いま通話中かどうか</b>を表示する小さなバナーを、ブログや Google サイトに貼れます。
-      部屋名を入れると、下にプレビューと貼り付け用コードが出ます。</p>
+      部屋のリンクを貼ると、下にプレビューと貼り付け用コードが出ます。</p>
   </header>
 
   <section class="panel">
-    <h2>① 部屋名を入れる</h2>
+    <h2>① 部屋のリンクを貼る</h2>
     <div style="margin-top:10px">
-      <label for="room">あなたの部屋名（アプリで使っているものと同じに）</label>
-      <input type="text" id="room" placeholder="◯◯の部屋" autocomplete="off">
+      <label for="room">部屋の URL（アプリの「招待リンク」やアドレスバーの URL をそのまま貼る）</label>
+      <input type="text" id="room" placeholder="https://qramo.github.io/po_call/#◯◯の部屋" autocomplete="off" spellcheck="false">
+      <div class="note" id="detected" style="margin-top:8px"></div>
     </div>
 
     <div class="previewArea">
@@ -60,7 +61,7 @@
 
     <div class="codebox">
       <label>② このコードをコピーして貼る</label>
-      <pre id="code">部屋名を入れてください</pre>
+      <pre id="code">部屋のリンクを貼ってください</pre>
       <button class="copy" id="copy" type="button">コピー</button>
     </div>
   </section>
@@ -85,13 +86,32 @@ const BASE = 'https://qramo.github.io/po_call/tools/banner.html'
 const SIZE = 'width="300" height="96"'
 const STYLE = 'style="border:0;border-radius:14px"'
 
+// 貼られた入力から「部屋名」を取り出す。URLなら #以降 か ?room= を拾う。生の部屋名でも可。
+// 打ち直させず貼るだけにすることで、絵文字や特殊文字（例：Appleロゴ ）入りの部屋名でも確実に一致する。
+const extractRoom = input => {
+  input = (input || '').trim()
+  if (!input) return ''
+  try {
+    const u = new URL(input)
+    if (u.hash && u.hash.length > 1) return decodeURIComponent(u.hash.slice(1))   // …/#部屋名
+    const rp = u.searchParams.get('room')                                         // …?room=部屋名（バナーURL等）
+    if (rp) return rp
+  } catch {}
+  if (input.startsWith('#')) { try { return decodeURIComponent(input.slice(1)) } catch { return input.slice(1) } }
+  return input   // 生の部屋名をそのまま貼った場合
+}
+// 本体アプリと同じく先頭30コードポイントで切る（絵文字を壊さないようコードポイント単位）
+const capRoom = s => [...s].slice(0, 30).join('')
+
 const update = () => {
-  const room = $('room').value.trim().slice(0, 30)
+  const room = capRoom(extractRoom($('room').value))
   if (!room) {
     $('preview').src = 'banner.html'
-    $('code').textContent = '部屋名を入れてください'
+    $('code').textContent = '部屋のリンクを貼ってください'
+    $('detected').textContent = ''
     return
   }
+  $('detected').innerHTML = '読み取れた部屋名：<b style="color:#eef2f8">' + room.replace(/[<&]/g, c => c === '<' ? '&lt;' : '&amp;') + '</b>'
   const enc = encodeURIComponent(room)
   // プレビューは相対パス（このページと同じ場所の banner.html）＝ローカルでも本番でも動く
   $('preview').src = 'banner.html?room=' + enc
@@ -103,13 +123,13 @@ $('room').addEventListener('input', update)
 
 $('copy').onclick = async () => {
   const t = $('code').textContent
-  if (!t || t.startsWith('部屋名')) return
+  if (!t || t.startsWith('部屋')) return
   try { await navigator.clipboard.writeText(t); $('copy').textContent = 'コピー済み ✓'
     setTimeout(() => { $('copy').textContent = 'コピー' }, 1500) } catch {}
 }
 
-// 初期値（デモ用に何か入れておく）。ユーザーは自分の部屋名に変える
-$('room').value = 'みんなの部屋'
+// 初期値（デモ用のリンク）。ユーザーは自分の部屋リンクに貼り替える
+$('room').value = 'https://qramo.github.io/po_call/#みんなの部屋'
 update()
 </script>
 </body>
