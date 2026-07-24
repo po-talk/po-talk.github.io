@@ -114,7 +114,17 @@
   #join{ background:#00e5cc; color:#063 }
   #unlock{ background:#ffd24d; color:#3a2c00; display:none }
   #mute{ background:#2a3550; color:#eef2f8; display:none }
-  #leave{ background:#ff5d5d; color:#fff; display:none }
+  /* 退出＝朱色（ティールの補色寄りで相性がよい）。少しだけ発光させる */
+  #leave{ background:#ef5a3c; color:#fff; display:none; box-shadow:0 2px 14px rgba(239,90,60,.30) }
+  /* アイコン＋文字を中央寄せ。参加時に JS が display:flex にする（未参加は none のまま） */
+  #mute, #leave{ align-items:center; justify-content:center; gap:9px }
+  #mute svg, #leave svg{ width:22px; height:22px; flex:none }   /* 線は currentColor で文字色に追従 */
+  /* ミュートの文字を最長ラベル幅で固定＝「ミュート」⇔「ミュート解除」でマイクが左右に動かない */
+  #mute .lbl{ display:inline-block; min-width:6.2em; text-align:center; white-space:nowrap }
+  /* マイクの斜線は常にDOMに置き、表示/非表示だけ切替（innerHTML差し替えの再描画ちらつきを避ける）。
+     visibility なのでレイアウトは一切動かない */
+  .mic-slash{ visibility:hidden }
+  #mute.muted .mic-slash{ visibility:visible }
   /* 参加後の操作は横並び（ミュート／退出を半々に） */
   .actions{ display:flex; gap:12px }
   .actions button{ flex:1; width:auto }
@@ -191,7 +201,11 @@
   .m-emoji{ font-size:22px; line-height:1; transform-origin:center; will-change:transform }
   .m-name{ font-size:14px; color:#eef2f8; word-break:break-all }
   .m-name .you{ color:#9fb0c7; font-size:12px }
-  .m-mute{ margin-left:auto; font-size:15px; opacity:.85 }
+  /* ミュート印＝朱色の丸い土台に暗いマイク斜線（退出ボタンと同系）。常に置いて visibility だけ切替 */
+  .m-mute{ margin-left:auto; flex:none; width:22px; height:22px; border-radius:50%;
+    background:#ef5a3c; display:inline-flex; align-items:center; justify-content:center; visibility:hidden }
+  .m-mute svg{ width:13px; height:13px; color:#0d1526 }
+  .member.muted .m-mute{ visibility:visible }
   .member.muted .m-emoji{ opacity:.45 }
   .member.muted .m-name{ color:#9fb0c7 }
   /* 2カラム：左＝通話カード／右＝ロビー。狭い画面では縦に積む */
@@ -228,7 +242,11 @@
     line-height:1; letter-spacing:1px; color:#00e5cc; text-shadow:0 0 6px rgba(0,229,204,.4) }
   .room-people{ margin-top:8px; display:flex; flex-wrap:wrap; gap:6px }
   .rp{ display:inline-flex; align-items:center; gap:4px; background:#0a1830; padding:3px 9px; border-radius:999px; font-size:13px; color:#cfe0f0 }
-  .rp.mut{ opacity:.5 }
+  .rp.mut{ opacity:.6 }
+  /* ロビーチップのミュート印＝参加者リストと同じ朱丸バッジの縮小版（15px） */
+  .rp-mute{ flex:none; width:15px; height:15px; border-radius:50%; background:#ef5a3c;
+    display:inline-flex; align-items:center; justify-content:center; margin-left:1px }
+  .rp-mute svg{ width:9px; height:9px; color:#0d1526 }
   /* 成長（ブラウザを育てる遊び）の自分向け表示 */
   .grow-note{ margin-top:14px; font-size:13px; color:#9fb0c7 }
 
@@ -303,8 +321,8 @@
   <button id="join">🎙 参加する</button>
   <button id="unlock">🔊 音声を有効化（タップ）</button>
   <div class="actions">
-    <button id="mute">🔇 ミュート</button>
-    <button id="leave">📴 退出</button>
+    <button id="mute"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M6 11a6 6 0 0 0 12 0"/><line x1="12" y1="17" x2="12" y2="21"/><line x1="8.5" y1="21" x2="15.5" y2="21"/><line class="mic-slash" x1="4" y1="3" x2="20" y2="21"/></svg><span class="lbl">ミュート</span></button>
+    <button id="leave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h8"/><path d="M14 3v18"/><path d="M18 12h4"/><path d="m19 9 3 3-3 3"/></svg><span>退出</span></button>
   </div>
 
   <div class="status">
@@ -709,6 +727,9 @@ const loadTrystero = () => {
 const setState = (t, kind = 'idle') => { $('state').textContent = t; $('dot').className = 'dot' + (kind === 'idle' ? '' : ' ' + kind) }
 const setCount = () => { $('count').textContent = peers.size }
 
+// ミュート印のマイク斜線SVG。参加者リストとロビーのチップで共用する（ボタンのミュート表示とも同じ形）。
+const MIC_OFF_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M6 11a6 6 0 0 0 12 0"/><line x1="12" y1="17" x2="12" y2="21"/><line x1="8.5" y1="21" x2="15.5" y2="21"/><line x1="4" y1="3" x2="20" y2="21"/></svg>'
+
 // 参加者リスト（自分＋接続中の相手）を描く。名前・絵文字は textContent で入れる（受信データは信用しない）。
 const membersEl = $('members')
 const emojiEls = new Map()  // uid('self'|peerId) → 現在の絵文字要素（描き直すたび貼り替え、VADから参照する）
@@ -718,8 +739,10 @@ const memberRow = (emoji, name, you, isMuted, stage) => {
   const nm = document.createElement('span'); nm.className = 'm-name'; nm.textContent = name || 'ゲスト'
   if (stage) nm.append(' ' + stage)   // 成長段階の絵文字（名前の後ろ）
   if (you) { const t = document.createElement('span'); t.className = 'you'; t.textContent = '（あなた）'; nm.append(' ', t) }
-  row.append(av, nm)
-  if (isMuted) { const m = document.createElement('span'); m.className = 'm-mute'; m.textContent = '🔇'; m.title = 'ミュート中'; row.append(m) }
+  // ミュート印はボタンと同じマイク斜線SVG（絵文字ではなく揃える）。常に置いて visibility だけ切替
+  // ＝追加/削除で行の高さが変わり枠がピクつくのを防ぐ。
+  const m = document.createElement('span'); m.className = 'm-mute'; m.title = 'ミュート中'; m.innerHTML = MIC_OFF_SVG
+  row.append(av, nm, m)
   return row
 }
 const renderMembers = () => {
@@ -975,16 +998,24 @@ $('join').onclick = async () => {
   const d = localDay(); if (stats.lastDay !== d) { stats.days++; stats.lastDay = d }
   saveStats(); renderGrow()
   growTimer = setInterval(() => { stats.seconds += 30; saveStats(); renderGrow(); renderMembers() }, 30000)
-  $('join').style.display = 'none'; $('mute').style.display = 'block'; $('leave').style.display = 'block'
+  $('join').style.display = 'none'; $('mute').style.display = 'flex'; $('leave').style.display = 'flex'
   $('retry').hidden = false
   roomInput.disabled = true; lockProfile(true)
   // 通話中は名前も部屋名も変えられないので、入力欄ごと畳む（名前は参加者リスト、部屋名は状態表示に出ている）
   $('setupFields').classList.add('collapsed')
 }
 
+// ミュートボタン。アイコン＝今の状態（マイクに斜線が出る／消える）、文字＝押すと起きること。
+// DOMは作り直さず class と textContent だけ変える（innerHTML差し替えの再描画ちらつきを防ぐ）。
+const renderMute = () => {
+  $('mute').classList.toggle('muted', muted)
+  $('mute').querySelector('.lbl').textContent = muted ? 'ミュート解除' : 'ミュート'
+}
+renderMute()   // 初期表示
+
 $('mute').onclick = () => {
   muted = !muted; myStream.getAudioTracks().forEach(t => t.enabled = !muted)
-  $('mute').textContent = muted ? '🔊 ミュート解除' : '🔇 ミュート'
+  renderMute()
   if (profileAction) profileAction.send(myProfilePayload()).catch(() => {})  // 全員へミュート状態を配信
   sendHeartbeat()  // ロビーの自分にもミュート状態を反映
   renderMembers(); renderLobby()  // 自分の行／ロビーの 🔇 を即反映
@@ -1030,7 +1061,7 @@ $('leave').onclick = () => {
   if (growTimer) { clearInterval(growTimer); growTimer = null }   // 成長の時間加算を停止
   renderGrow()
   joinedId = null; warn = ''; renderMembers(); renderLobby()
-  muted = false; $('mute').textContent = '🔇 ミュート'
+  muted = false; renderMute()
   resetQr()   // QRトグルを畳んでおく（次の参加で古いリンクを残さない）
   syncShare() // 「共有リンク」→「招待リンク（まだ参加していません）」に戻す
   setState('退出しました', 'idle')
@@ -1148,8 +1179,11 @@ const renderLobby = () => {
     people.forEach(p => {
       const rp = document.createElement('span'); rp.className = 'rp' + (p.muted ? ' mut' : '')
       const e = document.createElement('span'); e.textContent = p.emoji || '🙂'
-      const n = document.createElement('span'); n.textContent = (p.name || 'ゲスト') + (p.stage ? ' ' + p.stage : '') + (p.muted ? ' 🔇' : '')
-      rp.append(e, n); ppl.append(rp)
+      const n = document.createElement('span'); n.textContent = (p.name || 'ゲスト') + (p.stage ? ' ' + p.stage : '')
+      rp.append(e, n)
+      // ミュートは参加者リストと同じ朱丸バッジ（縮小版）で揃える。ミュート時だけ付ける
+      if (p.muted) { const b = document.createElement('span'); b.className = 'rp-mute'; b.innerHTML = MIC_OFF_SVG; rp.append(b) }
+      ppl.append(rp)
     })
     btn.append(top, dur, ppl)
     btn.onclick = () => selectRoom(room)
