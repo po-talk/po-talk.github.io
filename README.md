@@ -93,6 +93,7 @@ python3 -m http.server 8000
 - リョータさん
 - アサコさん
 - 田上光さん
+- croutonさん
 - hertzさん
 - 名無しさん
 - まを まをさん
