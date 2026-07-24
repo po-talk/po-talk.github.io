@@ -35,6 +35,7 @@
   @media (prefers-reduced-motion:reduce){ .live .dot{ animation:none } }
   .status .txt{ font-weight:700 }
   .live .txt{ color:#00e5cc }
+  .checking .txt{ color:#9fb0c7 }   /* 接続待ちは灰色（静か/通話中とは別の見た目） */
   .people{ display:inline-flex; gap:2px; margin-left:2px }
   .cta{ margin-left:auto; font-size:12px; color:#9fb0c7; white-space:nowrap }
   .room{ font-size:11px; color:#7a90ad; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
@@ -66,19 +67,28 @@ $('roomLine').textContent = room ? '部屋：' + room : ''
 
 const seen = new Map()   // pubkey → { ts(受信時刻), emoji }
 let card = $('card')
+// 接続前に「静か」と誤って出さないための状態。room があるうちは接続＆判定が済むまで「確認中…」。
+// ハートビートは5秒間隔なので、接続後この時間だけ在室が無ければ「静か」で確定する。
+let checked = !room
+const GRACE_MS = 8000   // 接続＋ハートビート(5秒)＋リレー遅延を見込んだ猶予。これを過ぎて在室無しなら「静か」確定
 
 const render = () => {
   const now = Date.now()
   for (const [k, v] of seen) if (now - v.ts > STALE_MS) seen.delete(k)
   const live = seen.size > 0
   card.classList.toggle('live', live)
+  card.classList.toggle('checking', !live && !checked)
   if (live) {
     $('txt').textContent = 'いま通話中'
     $('cta').textContent = 'タップで参加 →'
     const emojis = [...seen.values()].slice(0, 5).map(v => v.emoji || '🙂')
     $('people').textContent = emojis.join('') + (seen.size > 5 ? '…' : '')
+  } else if (!checked) {
+    $('txt').textContent = '確認中…'
+    $('cta').textContent = ''
+    $('people').textContent = ''
   } else {
-    $('txt').textContent = 'いまは静か'
+    $('txt').textContent = room ? 'いまは静か' : 'ぽっと通話へ'
     $('cta').textContent = room ? '部屋を開く →' : '開く →'
     $('people').textContent = ''
   }
@@ -86,7 +96,7 @@ const render = () => {
 render()
 setInterval(render, 2000)   // 失効を反映して定期的に描き直す
 
-// room 未指定なら購読しない（静的バナーとしてリンクだけ）
+// room 未指定なら購読しない（静的バナーとしてリンクだけ／checked は最初から true）
 if (room) {
   try {
     const nt = await import('https://esm.sh/nostr-tools@2.10.4')
@@ -95,14 +105,18 @@ if (room) {
     const pool = new nt.SimplePool()
     pool.subscribeMany(RELAYS, [{ kinds: [20001], '#d': [d], since: Math.floor(Date.now() / 1000) - 20 }], {
       onevent(e) {
+        checked = true
         let emoji = '🙂'
         try { emoji = JSON.parse(e.content).e || '🙂' } catch {}
         seen.set(e.pubkey, { ts: Date.now(), emoji })   // 発信者ごとに最新受信時刻で更新
         render()
       }
     })
+    // 接続後、ハートビート間隔ぶん待って在室が無ければ「静か」で確定（それまでは「確認中…」のまま）
+    setTimeout(() => { checked = true; render() }, GRACE_MS)
   } catch {
     // Nostr が読めなくても、静的な「開く」バナーとして成立させる（見た目は壊さない）
+    checked = true
     render()
   }
 }
