@@ -90,5 +90,12 @@ python3 -m http.server 8000
 ---
 
 🙏 テストに協力してくれたみんな、ありがとう！
+- リョータさん
+- アサコさん
+- 田上光さん
+- hertzさん
+- 名無しさん
+- まを まをさん
+- しーちゃんさん
 
-制作 ♨️🦈 qramo(ｸﾗﾓ) on POPOPO ／ 開発は [Claude Code](https://claude.com/claude-code) と一緒に。
+制作 ♨️🦈 qramo(ｸﾗﾓ) on POPOPO ／ 開発は [Claude Code](https://claude.com/claude-code) / OpenClaw(https://openclaw.ai)と一緒に。
