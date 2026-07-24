@@ -7,7 +7,7 @@
 <!-- OGP（SNSでリンクを貼ったときのカード）。画像は絶対URL必須・部屋名はハッシュなので全部屋共通 -->
 <meta property="og:type" content="website">
 <meta property="og:title" content="ぽっと通話〈実験版〉">
-<meta property="og:description" content="声だけで、ぽっとつながる。サーバのいらない音声通話（WebRTC・P2P）。">
+<meta property="og:description" content="声だけで、ぽっとつながる。サーバのいらない音声通話（WebRTC）。">
 <meta property="og:url" content="https://qramo.github.io/po_call/">
 <meta property="og:image" content="https://qramo.github.io/po_call/images/ogp.png">
 <meta property="og:image:width" content="1200">
@@ -293,7 +293,7 @@
     <h1><span>🦞 ぽっと通話</span><span>〈実験版〉</span></h1>
     <button id="help" class="help-btn" type="button" aria-haspopup="dialog">これはなに？</button>
   </div>
-  <p class="sub">同じ部屋名を開いた人どうしが、そのまま音声通話（WebRTC・P2P）。サーバ不要。</p>
+  <p class="sub">同じ部屋名を開いた人どうしが、そのまま音声通話（WebRTC）。サーバ不要。</p>
 
   <div id="setupFields" class="collapsible"><div>
   <details id="profileBox" class="profile">
@@ -367,7 +367,7 @@
   <button id="helpX" class="help-x" type="button" aria-label="閉じる">✕</button>
   <h2>🦞 これはなに？</h2>
 
-  <p>同じ部屋名を開いた人どうしが、そのまま音声でおしゃべりできる実験的なミニ通話Webアプリです。サーバを持たず、ブラウザ同士が直接つながります（WebRTC・P2P）。配信アプリ <b>POPOPO</b> にインスパイアされて作りました。</p>
+  <p>同じ部屋名を開いた人どうしが、そのまま音声でおしゃべりできる実験的なミニ通話Webアプリです。サーバを持たず、ブラウザだけで通話できます（WebRTC）。配信アプリ <b>POPOPO</b> にインスパイアされて作りました。</p>
   <p class="help-tip">💡 部屋名はURLの一部（末尾の <code>#◯◯</code>）。共有リンク＝その部屋のURLなので、開けば同じ部屋に入れます。</p>
   <p class="help-warn">⚠️ 実験中です。ご利用は自己責任で！</p>
 
@@ -390,7 +390,7 @@
 
   <details class="help-sec"><summary>しくみ・プライバシー</summary>
     <ul>
-      <li>音声はブラウザ間で<b>直接</b>やりとり（サーバに録音・保存されません）</li>
+      <li>音声は<b>暗号化</b>してやり取り（サーバに録音・保存されません）。ふだんは Cloudflare の中継を通すので、<b>相手にあなたの IP アドレスは見えません</b>（中継先も暗号化された中身は聞けません）</li>
       <li>部屋名を知っている人は誰でも入れます。ロビーには<b>部屋名・参加者・どのくらい続いているか・話しているかどうか</b>が表示されます（＝内緒の部屋ではありません）</li>
       <li>通話中は「その部屋が今ライブか」を外部（ブログのバナー等）が表示できるよう、在室情報を公開Nostrリレーに送っています。<b>部屋名そのものは送らず、伏せた値（ハッシュ）</b>にしているので、部屋名を知らない人に一覧で覗かれることはありません（運営サーバは介しません）</li>
       <li>アクセス数の測定に Cloudflare Web Analytics を使用（Cookie不使用・個人は特定しません）</li>
@@ -715,8 +715,15 @@ const loadIce = (force = false) => {
   }
   return icePromise
 }
-// 取得できた iceServers を rtcConfig に載せた最終設定を返す（未取得なら Trystero 既定＝STUNのみ）
-const trysteroConfig = ice => ice ? { ...TRYSTERO_BASE, rtcConfig: { iceServers: ice } } : TRYSTERO_BASE
+// 取得できた iceServers を rtcConfig に載せた最終設定を返す（未取得なら Trystero 既定＝STUNのみ）。
+// iceTransportPolicy:'relay' ＝ **常にTURN中継（P2P直結しない）**。参加者どうしに IP が見えなくなる
+// （公開部屋で見知らぬ相手にIPを知られないためのプライバシー改善）。音声は中継しても DTLS-SRTP で
+// 暗号化されたまま（Cloudflare も中身は聞けない）。第三者リレー経由なので運営は通信経路を持たない＝境界内。
+// ★ただし relay は TURN が取れている時だけ。取得失敗時に relay 強制すると候補ゼロで誰も繋がらないので、
+//   その場合は通常（STUN＋P2P）にフォールバックする。
+const trysteroConfig = ice => ice
+  ? { ...TRYSTERO_BASE, rtcConfig: { iceServers: ice, iceTransportPolicy: 'relay' } }
+  : TRYSTERO_BASE
 // ライブラリ読込は一度だけ。ロビー（ページ読込時）と参加（ボタン押下時）で共有する。
 // 失敗時はキャッシュを捨てて次回リトライできるようにする（参加フローの段階別エラー表示を壊さない）。
 let trysteroPromise = null

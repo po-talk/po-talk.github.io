@@ -1,7 +1,7 @@
 {
   "name": "ぽっと通話",
   "short_name": "ぽっと通話",
-  "description": "同じ部屋名を開いた人どうしが、そのまま音声通話（WebRTC・P2P）。サーバ不要。",
+  "description": "同じ部屋名を開いた人どうしが、そのまま音声通話（WebRTC）。サーバ不要。",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
