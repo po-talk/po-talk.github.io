@@ -392,6 +392,7 @@
     <ul>
       <li>音声はブラウザ間で<b>直接</b>やりとり（サーバに録音・保存されません）</li>
       <li>部屋名を知っている人は誰でも入れます。ロビーには<b>部屋名・参加者・どのくらい続いているか・話しているかどうか</b>が表示されます（＝内緒の部屋ではありません）</li>
+      <li>通話中は「その部屋が今ライブか」を外部（ブログのバナー等）が表示できるよう、在室情報を公開Nostrリレーに送っています。<b>部屋名そのものは送らず、伏せた値（ハッシュ）</b>にしているので、部屋名を知らない人に一覧で覗かれることはありません（運営サーバは介しません）</li>
       <li>アクセス数の測定に Cloudflare Web Analytics を使用（Cookie不使用・個人は特定しません）</li>
     </ul>
   </details>
@@ -1089,9 +1090,44 @@ const presences = new Map()  // 発信者peerId → {room, name, emoji, muted, s
 const heartbeatPayload = () => joinedId
   ? { room: joinedId, name: profile.name, emoji: profile.emoji, muted, stage: stageOf(), elapsed: mySeconds(), talk: talkLevel }
   : { room: null }
+// ───────── 在室の Nostr 直publish（段階A：既存ロビーに併走で足すだけ） ─────────
+// 外部（ブログのバナー等）が「この部屋が今ライブか」を、メッシュに入らず読み取り専用で知れるように、
+// 通話中は在室を公開Nostrリレーへ直接publishする。部屋名そのものは載せず SHA-256 ハッシュ（d タグ）だけ。
+// kind 20001 = NIP-16 ephemeral（リレーは保存せず現購読者へ配信）。鍵はセッション毎の使い捨て。
+// 運営サーバは介さない（第三者リレーのみ）＝法的posture維持。読み取り側は別途 banner.html。
+const NOSTR_RELAYS = TRYSTERO_BASE.relayConfig.urls
+const NOSTR_KIND = 20001
+let nostrLib = null, nostrPool = null, nostrKey = null
+const loadNostr = () => (nostrLib ??= import('https://esm.sh/nostr-tools@2.10.4').catch(e => { nostrLib = null; throw e }))
+const roomHash = async room => {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('potto:' + room))
+  return [...new Uint8Array(buf)].slice(0, 8).map(b => b.toString(16).padStart(2, '0')).join('')   // 先頭64bit
+}
+const publishPresence = async () => {
+  if (!joinedId) return
+  const room = joinedId
+  try {
+    const nt = await loadNostr()
+    nostrPool ??= new nt.SimplePool()
+    nostrKey ??= nt.generateSecretKey()
+    const d = await roomHash(room)
+    if (room !== joinedId) return   // 非同期の間に退出/部屋移動していたら中止
+    const evt = nt.finalizeEvent({
+      kind: NOSTR_KIND, created_at: Math.floor(Date.now() / 1000), tags: [['d', d]],
+      content: JSON.stringify({ n: profile.name, e: profile.emoji, muted, stage: stageOf() })   // 部屋名は入れない
+    }, nostrKey)
+    // publish は各リレーごとの Promise 配列。落ちるリレー（接続失敗・PoW要求 NIP-13 等）は普通にあるので
+    // 1本ずつ握りつぶす（どれか1つでも受理されれば購読側に届く）。未処理rejectを出さないため必須。
+    nostrPool.publish(NOSTR_RELAYS, evt).forEach(p => p.catch(() => {}))
+  } catch {}
+}
+
 // 自分の発信は自分に返ってこないので、一人きりの部屋だと再描画の機会が無く継続時間が進まない。
 // 送信のたびに描き直して自分の部屋の表示も更新する（他人の部屋は相手のハートビートで更新される）。
-const sendHeartbeat = () => { if (lobbyPresence) { lobbyPresence.send(heartbeatPayload()).catch(() => {}); renderLobby() } }
+const sendHeartbeat = () => {
+  if (lobbyPresence) { lobbyPresence.send(heartbeatPayload()).catch(() => {}); renderLobby() }
+  publishPresence()   // Nostr直publishも併走（joinedId が無ければ中で何もしない）
+}
 const startHeartbeat = () => { sendHeartbeat(); if (!heartbeatTimer) heartbeatTimer = setInterval(sendHeartbeat, HEARTBEAT_MS) }
 const stopHeartbeat = () => {
   if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null }
