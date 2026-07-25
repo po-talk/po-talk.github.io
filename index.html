@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>ぽっと通話 | po call</title>
+<title>ぽっと通話｜po call</title>
 <!-- OGP（SNSでリンクを貼ったときのカード）。画像は絶対URL必須・部屋名はハッシュなので全部屋共通 -->
 <meta property="og:type" content="website">
 <meta property="og:title" content="ぽっと通話〈実験版〉">
@@ -132,6 +132,7 @@
   /* 通知音のトグル（入室・退出音＝通話カード／新部屋音＝ロビー）。help-hide と同系の控えめな見た目 */
   .snd-opt{ display:flex; align-items:center; gap:8px; margin-top:12px; font-size:12.5px; color:#9fb0c7; cursor:pointer; user-select:none }
   .snd-opt input{ width:auto; margin:0; padding:0; accent-color:#00e5cc; flex:none }
+  #sndPeerRow{ margin-top:4px }   /* 人数表示のすぐ下に寄せる */
   #copy{ background:#1d2740; color:#cfe; margin-top:8px; padding:10px; font-size:14px }
   #qr{ background:#1d2740; color:#cfe; margin-top:8px; padding:10px; font-size:14px }
   .status{ margin-top:18px; padding:14px; border-radius:10px; background:#0d1526; font-size:14px; line-height:1.7 }
@@ -334,7 +335,6 @@
     <button id="mute"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M6 11a6 6 0 0 0 12 0"/><line x1="12" y1="17" x2="12" y2="21"/><line x1="8.5" y1="21" x2="15.5" y2="21"/><line class="mic-slash" x1="4" y1="3" x2="20" y2="21"/></svg><span class="lbl">ミュート</span></button>
     <button id="leave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h8"/><path d="M14 3v18"/><path d="M18 12h4"/><path d="m19 9 3 3-3 3"/></svg><span>退出</span></button>
   </div>
-  <label class="snd-opt" id="sndPeerRow" style="display:none"><input type="checkbox" id="sndPeer"> 🔔 入室・退出を音で知らせる</label>
 
   <div class="status">
     <div class="status-head">
@@ -342,6 +342,7 @@
       <button id="retry" class="retry-btn" type="button" hidden>🔄 つなぎ直す</button>
     </div>
     <div style="margin-top:8px">いま一緒にいる人：<span class="peers" id="count">0</span> 人</div>
+    <label class="snd-opt" id="sndPeerRow" style="display:none"><input type="checkbox" id="sndPeer"> 🔔 入室・退出を音で知らせる</label>
     <div id="members" class="members"></div>
     <div id="eq" class="eq" hidden aria-hidden="true"></div>
     <div style="margin-top:10px" id="shareWrap" hidden>
