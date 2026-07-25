@@ -130,6 +130,50 @@ python3 -m http.server 8000
 
 ---
 
+## 📊 アクセス状況（透明性のため公開）
+
+このアプリは [Cloudflare Web Analytics](https://www.cloudflare.com/web-analytics/)（**Cookie不使用・個人を特定しない匿名集計**）で**アクセス数だけ**を測っています。透明性のため、その集計を公開します。個々の通話内容・在室・音声は一切測っていません（そもそも測る仕組みがありません）。
+
+**集計期間：2026/07/12〜07/25（JST）／累計訪問数：610**
+数値は Cloudflare 側で10単位に丸められた概数、2026/07/26 時点のスナップショットです。公開した 7/19 以降に立ち上がり、告知を広げた **7/24 に約160/日でピーク**。
+
+![訪問数の推移（Cloudflare Web Analytics）](images/readme/analytics-visits.png)
+
+**国別**
+
+| 国 | 訪問 |
+|---|--:|
+| 日本 | 590 |
+| アメリカ | 20 |
+
+![国別アクセス（日本 / アメリカ）](images/readme/analytics-countries.png)
+
+**参照元（どこから来たか）**
+
+| 参照元 | 訪問 |
+|---|--:|
+| なし（直接アクセス） | 450 |
+| t.co（X / Twitter） | 80 |
+| com.twitter.android | 30 |
+| b.hatena.ne.jp（はてなブックマーク） | 20 |
+| www.facebook.com | 20 |
+
+**デバイス / OS / ブラウザ**
+
+| デバイス | 訪問 | | OS | 訪問 | | ブラウザ | 訪問 |
+|---|--:|---|---|--:|---|---|--:|
+| モバイル | 410 | | iOS | 200 | | Mobile Safari | 200 |
+| デスクトップ | 190 | | Android | 190 | | Chrome | 180 |
+| タブレット | 10 | | macOS | 140 | | Chrome Mobile | 170 |
+| | | | Windows | 30 | | Firefox | 10 |
+| | | | 不明 | 30 | | 不明 | ※ |
+
+![参照元・パス・ホスト・ブラウザ・OS・デバイスの内訳](images/readme/analytics-sources.png)
+
+※ ブラウザの「不明（Unknown）」は元画面で数値が隠れていたため未記載。すべてページ全体（`/po_call/`・ホスト `qramo.github.io`）へのアクセスです。
+
+---
+
 🙏 テストに協力してくれたみんな、ありがとう！
 - リョータさん
 - アサコさん
