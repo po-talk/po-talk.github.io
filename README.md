@@ -1,7 +1,7 @@
 # 🦞 ぽっと通話 (po-call)
 
 同じ部屋名（URL）を開いた人どうしが、そのまま音声通話できる実験的な**静的Webページ**。
-サーバ不要・**HTML1枚**（WebRTC の P2P 音声 ＋ [Trystero](https://github.com/dmotz/trystero) / Nostr）。
+サーバ不要・**HTML1枚**（WebRTC 音声 ＋ [Trystero](https://github.com/dmotz/trystero) / Nostr）。既定はプライバシー配慮で **Cloudflare TURN 中継**を通し、相手に自分の IP が見えないようにしている。
 
 **👉 使ってみる： https://qramo.github.io/po_call/**
 
@@ -39,7 +39,7 @@
 ### 構成
 - **`index.html` 1枚**。ビルド無し・`node_modules` 無し・バックエンド無し。
 - 依存は [Trystero](https://github.com/dmotz/trystero) 1つだけを、実行時に `esm.sh` から動的 `import`。
-- 相手発見／シグナリングは公開 **Nostrリレー**、音声は **WebRTC P2P（ブラウザ間 E2E）**。NAT越えは **Cloudflare TURN**（後述）。
+- 相手発見／シグナリングは公開 **Nostrリレー**、音声は **WebRTC（ブラウザ間 E2E 暗号化）**。**既定は Cloudflare TURN 中継経由**（`iceTransportPolicy:'relay'`）で、相手に自分の IP が見えないようにしている。TURN 資格情報が取れないときだけ通常の P2P/STUN にフォールバック（後述）。
 - 「ロビー（通話中の部屋一覧）」も固定の隠し部屋 `__lobby__` に全員が入り、通話中の人が在室を定期発信して集約する仕組み。**サーバは足していません。**
 
 ### ローカルで動かす
@@ -67,12 +67,14 @@ python3 -m http.server 8000
 | **Cloudflare Analytics トークン** | `<head>` のビーコンは作者のもの。自分のに差し替えるか、まるごと削除。 |
 | アイコン / `manifest.webmanifest` / フォローカード画像 | 好みで差し替え。 |
 
-### Cloudflare TURN（安定させたい人向け）
-別ネットワーク間（対称NAT・セルラー）は直 P2P が失敗し **TURN 中継**が要ります。無料の公開 TURN は不安定なので、**Cloudflare Realtime TURN ＋ 短命の資格情報を発行する小さな Worker**を推奨（Worker は "合鍵を渡すだけ" で通話は通らない）。
+### Cloudflare TURN（中継の既定・安定させたい人向け）
+本アプリは**既定で音声を必ず TURN 中継**に通します（`iceTransportPolicy:'relay'`）。狙いは **IP プライバシー**（中継なら相手に自分の実 IP が見えない。音声は中継でも DTLS-SRTP で暗号化されたままで、Cloudflare も中身は聞けない）。あわせて対称NAT・セルラーなど直 P2P が張れない環境の救済も兼ねます。無料の公開 TURN は不安定なので、**Cloudflare Realtime TURN ＋ 短命の資格情報を発行する小さな Worker**を推奨（Worker は "合鍵を渡すだけ" で通話は通らない＝運営は通信経路を持たない）。
 
 - Cloudflare ダッシュボード → Realtime → **TURN Server** で TURN キー（Key ID / API Token）を作成
 - Worker が `POST https://rtc.live.cloudflare.com/v1/turn/keys/$KEY_ID/credentials/generate-ice-servers`（`Authorization: Bearer $API_TOKEN`）を叩いて `iceServers` を返す。CORS で自分のオリジンだけ許可
 - ページは起動時にその Worker から `iceServers` を取得し、`rtcConfig.iceServers` として Trystero に渡す
+- **relay は資格情報が取れた時だけ**：`trysteroConfig` は `ice` が truthy のときだけ `iceTransportPolicy:'relay'` を付ける。取れないと候補ゼロで全員不通になるため、その場合は relay を外して通常の P2P/STUN にフォールバックする（安全網）
+- 参加者リストの **☁️（中継）/ ↔（直結）アイコン**で、各自が中継経由か直結かを自己申告表示（自分の IP が相手に見えるかの可視化）
 
 ### Trystero 0.25 系メモ
 ネット上の情報の多くは旧 API なので注意：
@@ -81,11 +83,50 @@ python3 -m http.server 8000
 - **サブパス import は例外**：`trystero/torrent` 等は不可。素の `trystero` は **nostr** 戦略（本アプリはこれ）
 - **リレー指定**：`relayConfig:{ urls:['wss://...'], redundancy:N }`。平坦な `relayUrls` / `relayRedundancy` は**無視**される
 - **ICE 指定**：丸ごと差し替えるなら `rtcConfig:{ iceServers:[...] }`。`turnConfig:[{urls,username,credential}]` は既定 STUN に**追加**
+- **relay 強制（本アプリの既定）**：`rtcConfig:{ iceServers:[...], iceTransportPolicy:'relay' }` で常に TURN 中継のみ（直 P2P しない＝IP を隠す用途）
 
 ### スケール / 注意
 - **フルメッシュ**（全員が全員に接続）＝快適なのは **〜4〜6人**。大人数は SFU（LiveKit 等）が必要。
 - ロビーも**閲覧者全員**のデータメッシュ。効くのは通話人数ではなく同時閲覧者数で、**数十人規模で頭打ち**（伸ばすなら Nostr 直 publish 等のサーバレスな方式へ）。
-- 音声は **E2E**（サーバに残らない）。シグナリングは Nostr 公開リレー経由。
+- 音声は **E2E 暗号化**（DTLS-SRTP）。**既定の Cloudflare 中継を経由してもバイト列を運ぶだけで中身は復号されず**、運営の設備も通らない。シグナリングは Nostr 公開リレー経由。
+
+---
+
+## 📅 これまでの歩み
+
+- 2026/07/15 POPOPO の終了が発表される。po_call を構想
+- 2026/07/16 po_call をローンチ（GitHub で作成・公開）
+- 2026/07/17 POPOPO の知り合いと遊び始める
+- 2026/07/18 通話中の部屋を実装。「誰がいて・誰が話していて・どの部屋がライブか」を可視化
+- 2026/07/19
+    - 絵文字が育つ成長機能（🌱→🌿→🌷→🌲/🌳）を追加
+    - QRコード表示とプロフィールの折りたたみを追加
+    - 「これはなに？」ヘルプをモーダル化
+    - TURN を Cloudflare へ切り替え
+- 2026/07/20 ヘルプを拡充し、README を2部構成に整備
+- 2026/07/21
+    - 公開・告知を開始（POPOPO プロフィールにリンクを掲載）
+    - ChatGPT に[レビューをもらった](https://chatgpt.com/share/6a5ef1cf-9d04-83e8-9724-c0faccb27bb0)
+    - スマホの表示領域を有効活用（枠を外して全幅化）
+    - 参加後は不要な入力フォーム（名前・部屋名）を畳むように
+    - 共有 URL は見た目を一行に省略
+    - 「これはなに？」をスクロール優先にし、説明トグルは開くたびリセット
+    - コードが1000行を超える
+- 2026/07/22
+    - 長い部屋名を制限（QRコードが細かくなり読みにくくなるため）
+    - 部屋の継続時間を表示（最長在室者のタイマー基準のため、短くなることもある）
+    - 部屋名と衝突して崩れていた人数表示を修正
+- 2026/07/23
+    - 部屋の音声状況に合わせた擬似グラフィックイコライザーを実装
+    - OGP 画像を設定し、SNS シェアに対応
+- 2026/07/24
+    - P2P 優先をやめ、WebRTC を既定で中継経由に変更
+    - 絵文字で代用していたパーツを画像化
+    - ブログ等に貼れるアクティブバナーを実装
+- 2026/07/25
+    - 入退室の通知音を追加 🔈
+    - 新しい部屋を検出したときの通知音を追加 🔈
+    - 接続経路の表示（☁️中継 / ↔直結）を参加者リストに追加
 
 ---
 
