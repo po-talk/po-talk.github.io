@@ -209,6 +209,12 @@
   .member.muted .m-mute{ visibility:visible }
   .member.muted .m-emoji{ opacity:.45 }
   .member.muted .m-name{ color:#9fb0c7 }
+  /* 接続経路アイコン＝行の右端。中継=Cloudflareオレンジ雲／直結=アプリ色ティール矢印。
+     プロフィール未着（経路不明）の相手には出さない。色だけで意味を持たせる（案A）＝title で補足。 */
+  .m-conn{ flex:none; display:inline-flex; align-items:center; justify-content:center; width:18px; height:18px }
+  .m-conn svg{ width:16px; height:16px }
+  .m-conn.relay{ color:#f6821f }
+  .m-conn.direct{ color:#00e5cc }
   /* 2カラム：左＝通話カード／右＝ロビー。狭い画面では縦に積む */
   .wrap{ width:100%; display:flex; flex-wrap:wrap; gap:18px; align-items:flex-start; justify-content:center }
   .lobby{ width:100%; max-width:440px; background:rgba(255,255,255,.04);
@@ -677,6 +683,7 @@ const lockProfile = on => {
 }
 
 let room, myStream, muted = false, wantWake = false, wakeLock = null
+let usingRelay = false   // 参加時に確定＝この通話で自分がTURN中継経由か（!!ice）。相手にIPが見えるかの可視化に使う
 let leaving = null   // 進行中の退出処理（room.leave() は非同期）
 let lastRoom = null  // ゾンビroom検出用（下の「③ 部屋に参加」参照）
 const mySeconds = () => joinedId ? Math.floor((performance.now() - joinedAt) / 1000) : 0
@@ -684,10 +691,11 @@ let warn = ''        // 直近のピア単位エラー（誰とも繋がって�
 let profileAction = null   // 参加中だけ有効。ミュート状態の配信にも使う（#mute ハンドラ参照）
 const peers = new Set()
 const audios = new Map()   // peerId → audio要素[]（相手の退出時に個別破棄する）
-const profiles = new Map() // peerId → {name, emoji, muted}（相手から届いたプロフィール）
+const profiles = new Map() // peerId → {name, emoji, muted, relay}（相手から届いたプロフィール）
 
-// 自分の現在のプロフィール送信データ（名前・絵文字・ミュート状態・成長段階）
-const myProfilePayload = () => ({ name: profile.name, emoji: profile.emoji, muted, stage: stageOf() })
+// 自分の現在のプロフィール送信データ（名前・絵文字・ミュート状態・成長段階・接続経路）。
+// relay は「自分が中継経由か」の自己申告（各自のブラウザだけが確実に知る）。参加者リストに経路アイコンを出す。
+const myProfilePayload = () => ({ name: profile.name, emoji: profile.emoji, muted, stage: stageOf(), relay: usingRelay })
 
 // Trystero 設定（通話部屋とロビー部屋で共用）。
 const TRYSTERO_BASE = {
@@ -738,33 +746,44 @@ const setCount = () => { $('count').textContent = peers.size }
 
 // ミュート印のマイク斜線SVG。参加者リストとロビーのチップで共用する（ボタンのミュート表示とも同じ形）。
 const MIC_OFF_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M6 11a6 6 0 0 0 12 0"/><line x1="12" y1="17" x2="12" y2="21"/><line x1="8.5" y1="21" x2="15.5" y2="21"/><line x1="4" y1="3" x2="20" y2="21"/></svg>'
+// 接続経路アイコン。中継＝Cloudflareの雲（オレンジ）／直結＝双方向矢印（ティール）。色だけで意味を持たせる（案A）。
+const CLOUD_SVG  = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17.5 19a4.5 4.5 0 0 0 .5-8.97A6 6 0 0 0 6.2 9.4 4 4 0 0 0 6.5 19z"/></svg>'
+const ARROWS_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 7 4 11l4 4"/><path d="M16 7l4 4-4 4"/><path d="M4 11h16"/></svg>'
 
 // 参加者リスト（自分＋接続中の相手）を描く。名前・絵文字は textContent で入れる（受信データは信用しない）。
+// relay: true=中継 / false=直結 / undefined=経路不明（プロフィール未着や旧クライアント）→アイコンを出さない。
 const membersEl = $('members')
 const emojiEls = new Map()  // uid('self'|peerId) → 現在の絵文字要素（描き直すたび貼り替え、VADから参照する）
-const memberRow = (emoji, name, you, isMuted, stage) => {
+const memberRow = (emoji, name, you, isMuted, stage, relay) => {
   const row = document.createElement('div'); row.className = 'member' + (isMuted ? ' muted' : '')
   const av = document.createElement('span'); av.className = 'm-emoji'; av.textContent = emoji || '🙂'
   const nm = document.createElement('span'); nm.className = 'm-name'; nm.textContent = name || 'ゲスト'
   if (stage) nm.append(' ' + stage)   // 成長段階の絵文字（名前の後ろ）
   if (you) { const t = document.createElement('span'); t.className = 'you'; t.textContent = '（あなた）'; nm.append(' ', t) }
   // ミュート印はボタンと同じマイク斜線SVG（絵文字ではなく揃える）。常に置いて visibility だけ切替
-  // ＝追加/削除で行の高さが変わり枠がピクつくのを防ぐ。
+  // ＝追加/削除で行の高さが変わり枠がピクつくのを防ぐ。margin-left:auto で右クラスタを右端へ寄せる。
   const m = document.createElement('span'); m.className = 'm-mute'; m.title = 'ミュート中'; m.innerHTML = MIC_OFF_SVG
   row.append(av, nm, m)
+  // 接続経路アイコン（行の右端）。経路が分かるときだけ足す（不明なら出さない）。SVGは定数なので innerHTML で安全。
+  if (relay !== undefined) {
+    const c = document.createElement('span'); c.className = 'm-conn ' + (relay ? 'relay' : 'direct')
+    c.title = relay ? '中継（Cloudflare経由・相手にIPが見えません）' : '直結（相手にIPが見えます）'
+    c.innerHTML = relay ? CLOUD_SVG : ARROWS_SVG
+    row.append(c)
+  }
   return row
 }
 const renderMembers = () => {
   membersEl.replaceChildren(); emojiEls.clear()
   if (!joinedId) return
-  const add = (uid, emoji, name, you, isMuted, stage) => {
-    const row = memberRow(emoji, name, you, isMuted, stage)
+  const add = (uid, emoji, name, you, isMuted, stage, relay) => {
+    const row = memberRow(emoji, name, you, isMuted, stage, relay)
     emojiEls.set(uid, row.querySelector('.m-emoji'))
     membersEl.appendChild(row)
   }
-  add('self', profile.emoji, profile.name, true, muted, stageOf())
-  // peers（接続の事実）を軸にし、プロフィール未着の相手は仮表示にする
-  peers.forEach(id => { const p = profiles.get(id) || {}; add(id, p.emoji, p.name, false, !!p.muted, p.stage) })
+  add('self', profile.emoji, profile.name, true, muted, stageOf(), usingRelay)
+  // peers（接続の事実）を軸にし、プロフィール未着の相手は仮表示にする（経路も未着なら undefined＝アイコンなし）
+  peers.forEach(id => { const p = profiles.get(id) || {}; add(id, p.emoji, p.name, false, !!p.muted, p.stage, p.relay) })
 }
 
 // アクティブスピーカー検出（VAD）：各ストリームの音量を測り、話している人の絵文字を跳ねさせる。
@@ -948,6 +967,9 @@ $('join').onclick = async () => {
   // ③ 部屋に参加（先に TURN 資格情報を取得。失敗しても STUN のみで続行）
   let ice = null
   try { ice = await loadIce() } catch {}
+  // 経路を確定：ice が取れた時だけ trysteroConfig が relay-only を付ける（＝実際に中継経由）。
+  // 取れなければ通常のP2P/STUN＝直結。この値を自己申告して参加者リストに経路アイコンを出す。
+  usingRelay = !!ice
   try {
     room = joinRoom(trysteroConfig(ice), roomId, {
       // ピア単位の非致命エラー（幽霊ピアへのハンドシェイク失敗など）。部屋自体は生きていて
@@ -974,7 +996,9 @@ $('join').onclick = async () => {
         name: String(data?.name ?? prev.name ?? '').slice(0, 20),
         emoji: String(data?.emoji ?? prev.emoji ?? '🙂').slice(0, 8),
         muted: !!data?.muted,
-        stage: String(data?.stage ?? prev.stage ?? '').slice(0, 4)
+        stage: String(data?.stage ?? prev.stage ?? '').slice(0, 4),
+        // 経路は boolean のときだけ採用（旧クライアントは送らない→undefinedのまま＝アイコン非表示）
+        relay: typeof data?.relay === 'boolean' ? data.relay : prev.relay
       })
       renderMembers()
     }
@@ -1069,7 +1093,7 @@ $('leave').onclick = () => {
   stopHeartbeat()  // ロビーへ「退出した」を通知＋定期発信を停止（ロビー部屋自体は閲覧用に残す）
   if (growTimer) { clearInterval(growTimer); growTimer = null }   // 成長の時間加算を停止
   renderGrow()
-  joinedId = null; warn = ''; renderMembers(); renderLobby()
+  joinedId = null; warn = ''; usingRelay = false; renderMembers(); renderLobby()
   muted = false; renderMute()
   resetQr()   // QRトグルを畳んでおく（次の参加で古いリンクを残さない）
   syncShare() // 「共有リンク」→「招待リンク（まだ参加していません）」に戻す
