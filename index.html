@@ -7,7 +7,7 @@
 <!-- OGP（SNSでリンクを貼ったときのカード）。画像は絶対URL必須・部屋名はハッシュなので全部屋共通 -->
 <meta property="og:type" content="website">
 <meta property="og:title" content="ぽっと通話〈実験版〉">
-<meta property="og:description" content="声だけで、ぽっとつながる。サーバのいらない音声通話（WebRTC）。">
+<meta property="og:description" content="声だけで、ぽっとつながる。ブラウザですぐ話せる、気軽な音声通話。">
 <meta property="og:url" content="https://qramo.github.io/po_call/">
 <meta property="og:image" content="https://qramo.github.io/po_call/images/ogp.png">
 <meta property="og:image:width" content="1200">
@@ -299,7 +299,7 @@
     <h1><span>🦞 ぽっと通話</span><span>〈実験版〉</span></h1>
     <button id="help" class="help-btn" type="button" aria-haspopup="dialog">これはなに？</button>
   </div>
-  <p class="sub">同じ部屋名を開いた人どうしが、そのまま音声通話（WebRTC）。サーバ不要。</p>
+  <p class="sub">同じ部屋を開いた人どうし、声でつながります。</p>
 
   <div id="setupFields" class="collapsible"><div>
   <details id="profileBox" class="profile">
@@ -337,7 +337,7 @@
       <span><span class="dot" id="dot"></span><span id="state">未参加</span></span>
       <button id="retry" class="retry-btn" type="button" hidden>🔄 つなぎ直す</button>
     </div>
-    <div style="margin-top:8px">接続中の相手：<span class="peers" id="count">0</span> 人</div>
+    <div style="margin-top:8px">いま一緒にいる人：<span class="peers" id="count">0</span> 人</div>
     <div id="members" class="members"></div>
     <div id="eq" class="eq" hidden aria-hidden="true"></div>
     <div style="margin-top:10px" id="shareWrap" hidden>
@@ -373,8 +373,7 @@
   <button id="helpX" class="help-x" type="button" aria-label="閉じる">✕</button>
   <h2>🦞 これはなに？</h2>
 
-  <p>同じ部屋名を開いた人どうしが、そのまま音声でおしゃべりできる実験的なミニ通話Webアプリです。サーバを持たず、ブラウザだけで通話できます（WebRTC）。配信アプリ <b>POPOPO</b> にインスパイアされて作りました。</p>
-  <p class="help-tip">💡 部屋名はURLの一部（末尾の <code>#◯◯</code>）。共有リンク＝その部屋のURLなので、開けば同じ部屋に入れます。</p>
+  <p>同じ部屋名を開いた人どうしが、そのまま音声でおしゃべりできる実験的なミニ通話Webアプリです。アプリのインストールはいらず、ブラウザだけで使えます。配信アプリ <b>POPOPO</b> にインスパイアされて作りました。</p>
   <p class="help-warn">⚠️ 実験中です。ご利用は自己責任で！</p>
 
   <details class="help-sec"><summary>つかいかた</summary>
@@ -384,6 +383,7 @@
     <ol><li>部屋名を入れて「参加する」→ マイクを許可</li><li>同じ部屋名・共有リンク・QRコードを相手に渡す</li></ol>
     <p class="help-sub">部屋に入る</p>
     <ul><li>「通話中の部屋」から選んでタップ（共有リンク／QRからも入れます）→ マイクを許可</li></ul>
+    <p class="help-tip">💡 部屋名はURLの一部（末尾の <code>#◯◯</code>）。共有リンク＝その部屋のURLなので、開けば同じ部屋に入れます。</p>
   </details>
 
   <details class="help-sec"><summary>できること</summary>
@@ -396,6 +396,7 @@
 
   <details class="help-sec"><summary>しくみ・プライバシー</summary>
     <ul>
+      <li>通話は<b>ブラウザどうしを直接つなぐ仕組み（WebRTC）</b>です。運営はサーバを持たず（サーバレス）、通話の中身が運営の手元を通ることはありません</li>
       <li>音声は<b>暗号化</b>してやり取り（サーバに録音・保存されません）。ふだんは Cloudflare の中継を通すので、<b>相手にあなたの IP アドレスは見えません</b>（中継先も暗号化された中身は聞けません）</li>
       <li>部屋名を知っている人は誰でも入れます。ロビーには<b>部屋名・参加者・どのくらい続いているか・話しているかどうか</b>が表示されます（＝内緒の部屋ではありません）</li>
       <li>通話中は「その部屋が今ライブか」を外部（ブログのバナー等）が表示できるよう、在室情報を公開Nostrリレーに送っています。<b>部屋名そのものは送らず、伏せた値（ハッシュ）</b>にしているので、部屋名を知らない人に一覧で覗かれることはありません（運営サーバは介しません）</li>
@@ -767,7 +768,7 @@ const memberRow = (emoji, name, you, isMuted, stage, relay) => {
   // 接続経路アイコン（行の右端）。経路が分かるときだけ足す（不明なら出さない）。SVGは定数なので innerHTML で安全。
   if (relay !== undefined) {
     const c = document.createElement('span'); c.className = 'm-conn ' + (relay ? 'relay' : 'direct')
-    c.title = relay ? '中継（Cloudflare経由・相手にIPが見えません）' : '直結（相手にIPが見えます）'
+    c.title = relay ? '中継でつないでいます（相手にあなたのIPアドレスは見えません）' : '直接つないでいます（相手にあなたのIPアドレスが見えます）'
     c.innerHTML = relay ? CLOUD_SVG : ARROWS_SVG
     row.append(c)
   }
@@ -943,25 +944,25 @@ $('join').onclick = async () => {
   // room.leave() は非同期で、最後まで走って初めて部屋の登録が解除される。
   // 解除前に joinRoom すると「退出済みの死んだroom」が例外なしで返ってくるので、必ず待つ。
   if (leaving) {
-    setState('退出処理の完了を待っています…', 'busy')
+    setState('前の通話を片づけています…', 'busy')
     await leaving
   }
 
   // ① マイク取得
-  setState('マイクを取得中…（許可を押して）', 'busy')
+  setState('マイクを準備しています…（「許可」を押してください）', 'busy')
   try {
     myStream = await navigator.mediaDevices.getUserMedia({ audio: true })
   } catch (e) {
-    setState('マイク取得失敗: ' + e.name, 'error'); return
+    setState('マイクを使えませんでした: ' + e.name, 'error'); return
   }
 
   // ② 接続ライブラリ読込
-  setState('接続ライブラリを読込中…', 'busy')
+  setState('つなぐ準備をしています…', 'busy')
   let joinRoom
   try {
     ({ joinRoom } = await loadTrystero())
   } catch (e) {
-    setState('ライブラリ読込失敗: ' + (e.message || e), 'error'); return
+    setState('つなぐ準備に失敗しました: ' + (e.message || e), 'error'); return
   }
 
   // ③ 部屋に参加（先に TURN 資格情報を取得。失敗しても STUN のみで続行）
@@ -981,7 +982,7 @@ $('join').onclick = async () => {
     // 同じ（死んだ）roomオブジェクトを返す。掴んだままだと永久に繋がらないので弾く。
     if (room === lastRoom) {
       room = null
-      setState('前回の退出処理が完了していません。ページを再読込してください', 'error'); return
+      setState('前回の通話の片づけが終わっていません。ページを再読み込みしてください', 'error'); return
     }
     lastRoom = room
 
@@ -1016,7 +1017,7 @@ $('join').onclick = async () => {
     room.onPeerJoin = id => { peers.add(id); room.addStream(myStream, { target: id }); sendProfile(id); warn = ''; setCount(); render(); renderMembers() }
     room.onPeerLeave = id => { peers.delete(id); profiles.delete(id); dropAudios(id); removeAnalyser(id); setCount(); render(); renderMembers() }
   } catch (e) {
-    setState('接続失敗: ' + (e.message || e), 'error'); return
+    setState('つながりませんでした: ' + (e.message || e), 'error'); return
   }
 
   wantWake = true; wake()
