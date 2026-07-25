@@ -129,6 +129,9 @@
   /* 参加後の操作は横並び（ミュート／退出を半々に） */
   .actions{ display:flex; gap:12px }
   .actions button{ flex:1; width:auto }
+  /* 通知音のトグル（入室・退出音＝通話カード／新部屋音＝ロビー）。help-hide と同系の控えめな見た目 */
+  .snd-opt{ display:flex; align-items:center; gap:8px; margin-top:12px; font-size:12.5px; color:#9fb0c7; cursor:pointer; user-select:none }
+  .snd-opt input{ width:auto; margin:0; padding:0; accent-color:#00e5cc; flex:none }
   #copy{ background:#1d2740; color:#cfe; margin-top:8px; padding:10px; font-size:14px }
   #qr{ background:#1d2740; color:#cfe; margin-top:8px; padding:10px; font-size:14px }
   .status{ margin-top:18px; padding:14px; border-radius:10px; background:#0d1526; font-size:14px; line-height:1.7 }
@@ -331,6 +334,7 @@
     <button id="mute"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M6 11a6 6 0 0 0 12 0"/><line x1="12" y1="17" x2="12" y2="21"/><line x1="8.5" y1="21" x2="15.5" y2="21"/><line class="mic-slash" x1="4" y1="3" x2="20" y2="21"/></svg><span class="lbl">ミュート</span></button>
     <button id="leave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h8"/><path d="M14 3v18"/><path d="M18 12h4"/><path d="m19 9 3 3-3 3"/></svg><span>退出</span></button>
   </div>
+  <label class="snd-opt" id="sndPeerRow" style="display:none"><input type="checkbox" id="sndPeer"> 🔔 入室・退出を音で知らせる</label>
 
   <div class="status">
     <div class="status-head">
@@ -361,7 +365,8 @@
   </div>
   <div class="lobby-status" id="lobbyStatus">🛰 ロビーに接続中…</div>
   <div class="lobby-list" id="lobbyList"></div>
-  <p class="lobby-note">部屋をタップするとそのまま入室します。通話中は確認のうえ移動します。</p>
+  <label class="snd-opt"><input type="checkbox" id="sndRoom"> 🔔 新しい部屋ができたら音で知らせる</label>
+  <p class="lobby-note">部屋をタップするとそのまま入室します。通話中は確認のうえ移動します。<br>新しい部屋の音は、このタブを開いている間だけ鳴ります（スマホは裏に回ると鳴りません）。</p>
 </aside>
 </div>
 
@@ -391,6 +396,7 @@
       <li>☎️ ロビー：いま通話中の部屋が一覧で見える（続いている時間も）</li>
       <li>👥 参加者：名前・絵文字が出て、話している人の絵文字が跳ねる／ミュートも表示</li>
       <li>🌱 育てる：使うほどあなたの絵文字が成長（🌱→🌿→🌷→❓）</li>
+      <li>🔔 音：入室・退出や新しい部屋を音で知らせる（それぞれオン/オフ。新しい部屋の音はタブを開いている間だけ）</li>
     </ul>
   </details>
 
@@ -817,6 +823,42 @@ const ensureAudioCtx = () => {
   if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {})
   return audioCtx
 }
+
+// ─ 通知音 ─ 音声ファイルもCDNも使わず WebAudio で合成する（単一ファイルのまま）。
+// 入室・退出音は既定オン／新しい部屋の音は既定オフ（オプトイン）。設定は localStorage に保存。
+let sndPeer = localStorage.getItem('pot-call-snd-peer') !== '0'   // 未保存＝オン
+let sndRoom = localStorage.getItem('pot-call-snd-room') === '1'   // 未保存＝オフ
+let soundsArmed = false     // 参加直後の接続バーストで鳴らさないためのガード（1.5秒後に true）
+const seenRooms = new Set() // ロビーで既に鳴らした部屋名（重複防止・消えたら忘れて再通知する）
+// notes: [[周波数Hz, 開始秒, 長さ秒], …] を柔らかいエンベロープで鳴らす。ロビー音は未解錠なら resume も試みる。
+const playTones = notes => {
+  let ctx; try { ctx = ensureAudioCtx() } catch { return }
+  if (!ctx) return
+  const t0 = ctx.currentTime + 0.01
+  notes.forEach(([f, s, d]) => {
+    const o = ctx.createOscillator(), g = ctx.createGain()
+    o.type = 'sine'; o.frequency.value = f
+    const st = t0 + s
+    g.gain.setValueAtTime(0.0001, st)
+    g.gain.exponentialRampToValueAtTime(0.11, st + 0.012)      // やわらかいアタック
+    g.gain.exponentialRampToValueAtTime(0.0001, st + d)         // 減衰
+    o.connect(g); g.connect(ctx.destination)
+    o.start(st); o.stop(st + d + 0.03)
+  })
+}
+const soundJoin  = () => { if (sndPeer && soundsArmed) playTones([[660, 0, 0.13], [880, 0.10, 0.17]]) }   // 上昇＝入室
+const soundLeave = () => { if (sndPeer && soundsArmed) playTones([[620, 0, 0.13], [440, 0.11, 0.19]]) }   // 下降＝退出
+const soundRoom  = () => { if (sndRoom) playTones([[988, 0, 0.09], [1319, 0.08, 0.14]]) }                 // 軽いピコン＝新部屋
+// トグルの初期状態を反映＋変更を保存。新部屋音を「オンにする操作」がそのまま音の解錠（ユーザー操作）になる。
+{
+  const peerBox = $('sndPeer'), roomBox = $('sndRoom')
+  peerBox.checked = sndPeer; roomBox.checked = sndRoom
+  peerBox.onchange = () => { sndPeer = peerBox.checked; localStorage.setItem('pot-call-snd-peer', sndPeer ? '1' : '0') }
+  roomBox.onchange = () => {
+    sndRoom = roomBox.checked; localStorage.setItem('pot-call-snd-room', sndRoom ? '1' : '0')
+    if (sndRoom) { ensureAudioCtx(); soundRoom() }   // オンにした操作で解錠＋見本を1回鳴らす
+  }
+}
 const addAnalyser = (uid, stream) => {
   try {
     removeAnalyser(uid)   // 同じ相手のストリーム再取得（再ネゴ）で二重登録・リークしないように
@@ -1014,14 +1056,16 @@ $('join').onclick = async () => {
       addAnalyser(id, stream)   // 相手の音量を測って絵文字を跳ねさせる
       play(a)
     }
-    room.onPeerJoin = id => { peers.add(id); room.addStream(myStream, { target: id }); sendProfile(id); warn = ''; setCount(); render(); renderMembers() }
-    room.onPeerLeave = id => { peers.delete(id); profiles.delete(id); dropAudios(id); removeAnalyser(id); setCount(); render(); renderMembers() }
+    room.onPeerJoin = id => { peers.add(id); room.addStream(myStream, { target: id }); sendProfile(id); warn = ''; setCount(); render(); renderMembers(); soundJoin() }
+    room.onPeerLeave = id => { peers.delete(id); profiles.delete(id); dropAudios(id); removeAnalyser(id); setCount(); render(); renderMembers(); soundLeave() }
   } catch (e) {
     setState('つながりませんでした: ' + (e.message || e), 'error'); return
   }
 
   wantWake = true; wake()
   joinedId = roomId; joinedAt = performance.now(); warn = ''; render(); renderMembers()
+  // 入室音のガード：参加直後は「既にいる人ぶん」の onPeerJoin が連発するので、1.5秒は鳴らさない。
+  soundsArmed = false; setTimeout(() => { if (joinedId === roomId) soundsArmed = true }, 1500)
   syncShare()   // joinedId が入ったのでラベルを「共有リンク」に切り替える（冒頭の呼び出しは未参加のまま）
   addAnalyser('self', myStream)   // 自分のマイク音量でも絵文字を跳ねさせる（ミュート中は無反応）
   startEq()                       // 点字EQの飾りを開始（音量で下から伸びる）
@@ -1033,6 +1077,7 @@ $('join').onclick = async () => {
   saveStats(); renderGrow()
   growTimer = setInterval(() => { stats.seconds += 30; saveStats(); renderGrow(); renderMembers() }, 30000)
   $('join').style.display = 'none'; $('mute').style.display = 'flex'; $('leave').style.display = 'flex'
+  $('sndPeerRow').style.display = 'flex'   // 入室・退出音のトグルは通話中だけ表示（ミュート/退出と同じ）
   $('retry').hidden = false
   roomInput.disabled = true; lockProfile(true)
   // 通話中は名前も部屋名も変えられないので、入力欄ごと畳む（名前は参加者リスト、部屋名は状態表示に出ている）
@@ -1061,6 +1106,7 @@ $('mute').onclick = () => {
 // 参加中の見た目を「未参加」に戻す一式。退出時と、つなぎ直しに失敗して参加できなかった時に使う。
 const resetJoinedUI = () => {
   $('join').style.display = 'flex'; $('mute').style.display = 'none'; $('leave').style.display = 'none'; $('unlock').style.display = 'none'
+  $('sndPeerRow').style.display = 'none'
   $('retry').hidden = true
   roomInput.disabled = false; lockProfile(false)
   $('setupFields').classList.remove('collapsed')   // join で畳んだ入力欄を戻す
@@ -1094,7 +1140,7 @@ $('leave').onclick = () => {
   stopHeartbeat()  // ロビーへ「退出した」を通知＋定期発信を停止（ロビー部屋自体は閲覧用に残す）
   if (growTimer) { clearInterval(growTimer); growTimer = null }   // 成長の時間加算を停止
   renderGrow()
-  joinedId = null; warn = ''; usingRelay = false; renderMembers(); renderLobby()
+  joinedId = null; warn = ''; usingRelay = false; soundsArmed = false; renderMembers(); renderLobby()
   muted = false; renderMute()
   resetQr()   // QRトグルを畳んでおく（次の参加で古いリンクを残さない）
   syncShare() // 「共有リンク」→「招待リンク（まだ参加していません）」に戻す
@@ -1227,6 +1273,13 @@ const renderLobby = () => {
   status.textContent = names.length ? ''
     : (Date.now() - lobbySince < DISCOVER_MS ? '🛰 通話中の部屋を探しています…' : 'いま通話中の部屋はありません')
   roomFloor.forEach((_, r) => { if (!byRoom.has(r)) roomFloor.delete(r) })   // 消えた部屋の記憶を捨てる
+  // 新しい部屋の音：探索期間（DISCOVER_MS）は既存部屋を黙って覚えるだけ。以降に初めて現れた部屋だけ鳴らす。
+  // 自分の部屋は除外。消えた部屋は忘れるので、再び立てば改めて鳴る（＝死活監視向き）。
+  const seeded = Date.now() - lobbySince >= DISCOVER_MS
+  names.forEach(r => {
+    if (!seenRooms.has(r)) { if (seeded && r !== joinedId) soundRoom(); seenRooms.add(r) }
+  })
+  seenRooms.forEach(r => { if (!byRoom.has(r)) seenRooms.delete(r) })
   names.forEach(room => {
     const people = byRoom.get(room)
     // 活発さ＝その部屋の誰かが話していれば、その最大値。内側のリングの濃さで示す
