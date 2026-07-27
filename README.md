@@ -174,6 +174,14 @@ python3 -m http.server 8000
 
 ---
 
+## 📄 ライセンス
+
+[MIT](LICENSE) で公開しています。自由に使用・改変・再配布できます（著作権表示の保持が条件）。
+
+利用・同梱している第三者ソフトウェアの著作権表示は [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) にまとめています ── [Trystero](https://github.com/dmotz/trystero)（MIT）、[qrcode-generator](https://github.com/kazuhikoarase/qrcode-generator)（MIT）、[nostr-tools](https://github.com/nbd-wtf/nostr-tools)（Unlicense）、アイコンは [Lucide](https://lucide.dev/)（ISC）。
+
+---
+
 🙏 テストに協力してくれたみんな、ありがとう！
 - リョータさん
 - アサコさん
