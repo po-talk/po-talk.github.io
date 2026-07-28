@@ -1353,13 +1353,13 @@ let lobbyBusy = false
 // again=true は「更新」ボタン用：今のロビー接続を捨てて入り直す。相手側の onPeerJoin が発火して
 // 在室が即座に送られてくるので、取りこぼした部屋を拾い直せる。TURN資格情報も取り直す
 // （期限切れだとロビーの相手と繋がれず、部屋が一つも出てこない状態になりうるため）。
-const initLobby = async (again = false) => {
+const initLobby = async (again = false, soft = false) => {
   if (lobbyBusy) return
   lobbyBusy = true
   $('lobbyRefresh').disabled = true
   const status = $('lobbyStatus')
   try {
-    await openLobby(again, status)
+    await openLobby(again, status, soft)
   } finally {
     lobbyBusy = false
     // 連打対策。入り直すたびに発見がやり直しになるので、見つからなくて焦って押し続けると
@@ -1368,7 +1368,7 @@ const initLobby = async (again = false) => {
   }
 }
 
-const openLobby = async (again, status) => {
+const openLobby = async (again, status, soft = false) => {
   let joinRoom
   try {
     ({ joinRoom } = await loadTrystero())
@@ -1381,8 +1381,7 @@ const openLobby = async (again, status) => {
     // 入り直しの前に、前の接続と掃除タイマーを必ず片付ける（放置すると多重に走る）
     if (lobbySweep) { clearInterval(lobbySweep); lobbySweep = null }
     if (lobbyRoom) { const old = lobbyRoom; lobbyRoom = null; lobbyPresence = null; try { await old.leave() } catch {} }
-    presences.clear()
-    status.textContent = '🛰 ロビーに接続中…'
+    if (!soft) { presences.clear(); status.textContent = '🛰 ロビーに接続中…' }   // soft=一覧を消さず静かに入り直す（自動再接続用）
     lobbySince = Date.now()
     lobbyRoom = joinRoom(trysteroConfig(ice), LOBBY_ROOM)
     lobbyPresence = lobbyRoom.makeAction('presence')
@@ -1416,6 +1415,15 @@ const openLobby = async (again, status) => {
 }
 $('lobbyRefresh').onclick = () => initLobby(true)
 initLobby()
+// ロビーの自動再接続：長時間開きっぱなしだと TURN 資格情報が切れ、ロビーの相手と繋がれず
+// 「通話中の部屋」が出てこなくなる（＝一覧が best-effort で抜ける最有力原因）。定期的に＆タブ復帰時に、
+// 資格情報を取り直して soft（一覧を消さない）に入り直す。soft なので普段はチラつかない。
+const LOBBY_RECOVER_MS = 9 * 60 * 1000   // ICE_TTL(10分)より短く＝毎回新しい資格情報で入り直す
+setInterval(() => { if (!document.hidden) initLobby(true, true) }, LOBBY_RECOVER_MS)
+document.addEventListener('visibilitychange', () => {
+  // 裏に回っている間は setInterval が絞られ接続が古くなる。復帰時、前回接続から時間が経っていれば入り直す。
+  if (!document.hidden && Date.now() - lobbySince > 60000) initLobby(true, true)
+})
 // 招待リンクの初期表示。joinedId の宣言より後で呼ぶ必要があるのでここに置いている
 // （syncShare は joinedId を参照するため、宣言前に呼ぶと TDZ で落ちる）
 syncShare()
