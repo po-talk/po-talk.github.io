@@ -1418,8 +1418,9 @@ const openLobby = async (again, status, soft = false) => {
         room: capRoom(d.room), name: String(d.name || '').slice(0, 20),
         emoji: String(d.emoji || '🙂').slice(0, 8), muted: !!d.muted,
         stage: String(d.stage || '').slice(0, 4), ts: Date.now(),
-        // 相手が「その部屋に入ってからの秒数」。受信時刻(ts)を足して現在値に補正して使う
-        elapsed: Math.max(0, Math.min(Number(d.elapsed) || 0, 86400)),
+        // 相手が「その部屋に入ってからの秒数」。受信時刻(ts)を足して現在値に補正して使う。
+        // 上限は自己申告の暴走ガード（改造クライアント対策）。常設部屋が何日も続くので 30日 に設定。
+        elapsed: Math.max(0, Math.min(Number(d.elapsed) || 0, 2592000)),
         talk: Math.max(0, Math.min(Math.round(Number(d.talk) || 0), 3))   // 活発さ 0〜3
       })
       renderLobby()
