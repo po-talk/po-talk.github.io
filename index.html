@@ -229,6 +229,7 @@
   .lobby-head h2{ margin:0 }
   .lobby-head .retry-btn{ margin-left:auto }
   .lobby-status{ font-size:13px; color:#9fb0c7; margin-bottom:12px }
+  .lobby-viewers{ margin:12px 0 0; font-size:12.5px; color:#6f7f96 }
   .lobby-note{ margin:12px 0 0; font-size:12px; color:#6f7f96; line-height:1.6 }
   .legal{ width:100%; max-width:900px; margin:20px auto 0; text-align:center; font-size:11px; color:#5f6f86; line-height:1.7 }
   .legal a{ color:#7a90ad }
@@ -368,6 +369,7 @@
   <div class="lobby-status" id="lobbyStatus">🛰 ロビーに接続中…</div>
   <div class="lobby-list" id="lobbyList"></div>
   <label class="snd-opt"><input type="checkbox" id="sndRoom"> 🔔 新しい部屋ができたら音で知らせる</label>
+  <div class="lobby-viewers" id="lobbyViewers"></div>
   <p class="lobby-note">部屋をタップするとそのまま入室します。通話中は確認のうえ移動します。<br>新しい部屋の音は、このタブを開いている間だけ鳴ります（スマホは裏に回ると鳴りません）。</p>
 </aside>
 </div>
@@ -1350,6 +1352,28 @@ let lobbySince = 0           // ロビーに入り直した時刻
 let lobbySweep = null        // 取りこぼし掃除のタイマー（入り直しで二重に走らせない）
 let lobbyBusy = false
 
+// ───────── 閲覧者数（いまこのページを開いている人数） ─────────
+// 通話に入っていない人もページを開けばロビーのメッシュに繋がるので、ロビーのピアを数えれば
+// 「開いている総数」になる（自分＋つながれた相手）。ロビーに相乗りするだけでサーバは要らない。
+// best-effort：メッシュを張れない相手は数に入らない＝実数より少なめに出る。だから5刻みで丸め、
+// 5人未満は「数人」と濁して偽の精密さを出さない（メッシュ上限〜数十人を超えると当てにならない）。
+const lobbyPeers = new Set()
+let prevViewers = 0          // 入り直す直前の人数（下の grace で使う）
+
+const viewersLabel = n => n <= 1 ? '👥 いま見ているのは あなただけ です'
+  : n < 5 ? '👥 いま数人が見ています'
+  : '👥 いまだいたい' + Math.floor(n / 5) * 5 + '人が見ています'
+
+const renderViewers = () => {
+  const el = $('lobbyViewers')
+  if (!lobbyRoom) { el.textContent = ''; return }
+  // 入り直した直後はピアを一人ずつ拾い直している最中。そのまま出すと自動再接続のたびに
+  // 「あなただけ」まで落ちてから戻る。探索期間のあいだは直前の人数を下回らせない
+  // （一覧が「探しています」と出すのと同じ考え方）。
+  const live = lobbyPeers.size + 1
+  el.textContent = viewersLabel(Date.now() - lobbySince < DISCOVER_MS ? Math.max(prevViewers, live) : live)
+}
+
 // again=true は「更新」ボタン用：今のロビー接続を捨てて入り直す。相手側の onPeerJoin が発火して
 // 在室が即座に送られてくるので、取りこぼした部屋を拾い直せる。TURN資格情報も取り直す
 // （期限切れだとロビーの相手と繋がれず、部屋が一つも出てこない状態になりうるため）。
@@ -1381,6 +1405,9 @@ const openLobby = async (again, status, soft = false) => {
     // 入り直しの前に、前の接続と掃除タイマーを必ず片付ける（放置すると多重に走る）
     if (lobbySweep) { clearInterval(lobbySweep); lobbySweep = null }
     if (lobbyRoom) { const old = lobbyRoom; lobbyRoom = null; lobbyPresence = null; try { await old.leave() } catch {} }
+    // ピアIDは入り直すと変わるので数え直すしかない。直前の人数だけ控えて grace に使う
+    prevViewers = lobbyPeers.size + 1
+    lobbyPeers.clear()
     if (!soft) { presences.clear(); status.textContent = '🛰 ロビーに接続中…' }   // soft=一覧を消さず静かに入り直す（自動再接続用）
     lobbySince = Date.now()
     lobbyRoom = joinRoom(trysteroConfig(ice), LOBBY_ROOM)
@@ -1398,19 +1425,21 @@ const openLobby = async (again, status, soft = false) => {
       renderLobby()
     }
     // 新しい閲覧者が来たら、自分が通話中なら即座に在室を送って一覧を埋める
-    lobbyRoom.onPeerJoin = () => { if (joinedId) sendHeartbeat() }
-    lobbyRoom.onPeerLeave = peerId => { presences.delete(peerId); renderLobby() }
+    lobbyRoom.onPeerJoin = peerId => { lobbyPeers.add(peerId); renderViewers(); if (joinedId) sendHeartbeat() }
+    lobbyRoom.onPeerLeave = peerId => { lobbyPeers.delete(peerId); renderViewers(); presences.delete(peerId); renderLobby() }
     // 取りこぼし対策：一定時間更新の無い相手を掃除
     lobbySweep = setInterval(() => {
       const cut = Date.now() - STALE_MS; let changed = false
       presences.forEach((v, k) => { if (v.ts < cut) { presences.delete(k); changed = true } })
       if (changed) renderLobby()
+      renderViewers()   // 出入りが無いまま grace が明けても人数が古いまま残らないように
     }, HEARTBEAT_MS)
     if (joinedId) sendHeartbeat()   // 通話中に入り直したら、自分の在室をすぐ出し直す
-    renderLobby()
-    setTimeout(renderLobby, DISCOVER_MS + 200)   // 探索中の表示を「ありません」に切り替えるため
+    renderLobby(); renderViewers()
+    setTimeout(() => { renderLobby(); renderViewers() }, DISCOVER_MS + 200)   // 探索中の表示を切り替えるため
   } catch {
     status.textContent = '⚠️ ロビーに接続できませんでした'
+    renderViewers()   // 繋がらなければ人数も出さない（lobbyRoom が無いので空になる）
   }
 }
 $('lobbyRefresh').onclick = () => initLobby(true)
