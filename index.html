@@ -604,12 +604,22 @@ syncRoomCount()
 // プロフィール（名前・アバター絵文字）— ブラウザに保存し次回も引き継ぐ。
 // いまは自分の設定を保持するだけ。相手への送信・参加者リスト表示は次の段階で足す。
 const AVATARS = ['🦞','🐱','🐶','🦊','🐻','🐼','🐸','🐧','🦉','🐙','🦄','🐝','🌸','⭐','🍎','🍣']
+// 初見の初期名：お茶 × サメ映画テイスト（基本あったか・たまに竜巻）。名前も絵文字も初回だけランダムに入れる（編集可）。
+const TEA_MOD_COZY = ['朝の','昼下がりの','夜の','3時の','真夜中の','明け方の','週末の','雨の日の','こたつの','ひなたの','ゆげの','ほかほかの','あつあつの','できたての','ぬるめの','1杯目の','おかわり','2煎目の','ラストの','のこりの','まったりした','ねむけの','ほっと一息の','いつもの']
+const TEA_MOD_CHAOS = ['竜巻の','深海の','宇宙の','火山の','覚醒の','禁断の','伝説の','最強の','封印されし','メガ・','ゾンビ・','5つ首の']
+const TEAS = ['カモミール','ルイボス','ジャスミン','アールグレイ','ダージリン','セイロン','アッサム','ラプサンスーチョン','ペパーミント','レモングラス','ローズヒップ','ハイビスカス','ラベンダー','エルダーフラワー','リンデン','レモンバーム','ネトル','フェンネル','マロウ','チャイ','マサラチャイ','ほうじ茶','げんまい茶','せん茶','ぎょくろ','かりがね','くきちゃ','ばんちゃ','まっちゃ','和紅茶','そば茶','くろまめ茶','さんぴん茶']
+const CHAOS_RATE = 0.13   // たまに竜巻。頻度は語数と無関係にここで固定（レア確率の調整はこの数字だけ）
+const pickRand = arr => arr[Math.floor(Math.random() * arr.length)]
+const randomTeaName = () => pickRand(Math.random() < CHAOS_RATE ? TEA_MOD_CHAOS : TEA_MOD_COZY) + pickRand(TEAS)
 const PROFILE_KEY = 'pot-call-profile'
 let savedRaw = null
 try { savedRaw = localStorage.getItem(PROFILE_KEY) } catch {}
 let profile = { name: '', emoji: AVATARS[0] }
 try { if (savedRaw) profile = { ...profile, ...JSON.parse(savedRaw) } } catch {}
 const saveProfile = () => { try { localStorage.setItem(PROFILE_KEY, JSON.stringify(profile)) } catch {} }
+// 初回だけ（保存が無い＝初見）：ランダムな名前＋絵文字を初期値にして即保存＝リロードでも安定（レアは"初回の引き"）。
+// 既存ユーザー（savedRaw あり）は上書きしない。名前は編集可（下で input に反映）。
+if (!savedRaw) { profile.name = randomTeaName(); profile.emoji = pickRand(AVATARS); saveProfile() }
 
 // 折りたたみヘッダに現在の絵文字＋名前を映す（閉じていても誰か分かるように）
 const renderProfileSummary = () => {
