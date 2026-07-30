@@ -598,7 +598,12 @@ const syncRoomCount = () => {
   el.title = n > ROOM_MAX ? '参加すると ' + ROOM_MAX + ' 文字までに切り詰められます' : ''
 }
 roomInput.addEventListener('input', () => { syncRoomCount(); syncShare() })
-roomInput.value = decodeURIComponent(location.hash.slice(1)) || ''
+// URLの部屋名。壊れたパーセントエンコーディング（例 #%E3%81 ＝リンクが途中で切れた・手で削られた等）
+// だと decodeURIComponent は URIError を投げる。ここはモジュールのトップレベルなので、投げさせると
+// **以降の初期化が全部止まってアプリごと動かなくなる**（ボタンが一切効かない白紙同然の状態）。
+// 読めない hash は諦めて空にし、部屋名を手で入れ直せる状態を必ず残す。
+const roomFromHash = () => { try { return decodeURIComponent(location.hash.slice(1)) } catch { return '' } }
+roomInput.value = roomFromHash()
 syncRoomCount()
 
 // プロフィール（名前・アバター絵文字）— ブラウザに保存し次回も引き継ぐ。
