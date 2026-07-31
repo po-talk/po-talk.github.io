@@ -515,12 +515,28 @@ $('helpClose').onclick = () => helpDialog.close()
 $('helpX').onclick = () => helpDialog.close()   // 右上の❌（本文が長いと下の「閉じる」が見えないため）
 helpDialog.addEventListener('click', e => { if (e.target === helpDialog) helpDialog.close() })  // 背景クリックで閉じる
 
+// 「つなぎ直す」の予約。あれはページごとリロードして入り直すので（理由は下の #retry 参照）、
+// リロード後の自分がそれを引き取る。**ここで読んで消す**＝一度きり。以後この値を見る側は
+// 「つなぎ直しの最中か」を判断できる。sessionStorage なのでタブごとに独立している。
+const REJOIN_KEY = 'pot-call-rejoin'
+const rejoin = (() => {
+  try {
+    const raw = sessionStorage.getItem(REJOIN_KEY)
+    sessionStorage.removeItem(REJOIN_KEY)
+    const r = raw ? JSON.parse(raw) : null
+    // 時間切れは、タブ復元などで大昔の予約が生き返るのを防ぐため
+    return r && r.room && Date.now() - (r.at || 0) < 60000 ? r : null
+  } catch { return null }
+})()
+
 // 「今後表示しない」設定（localStorage）。オプトアウトしていなければアクセス時に自動で開く。
+// ただし**つなぎ直しの最中は出さない**：通話を復旧している最中に説明を被せても邪魔なだけで、
+// しかも本人はページが再読込されたことを知らないので「なぜ今？」になる。
 const HELP_HIDE_KEY = 'pot-call-hide-help'
 const helpHide = $('helpHide')
 try { helpHide.checked = localStorage.getItem(HELP_HIDE_KEY) === '1' } catch {}
 helpHide.onchange = () => { try { localStorage.setItem(HELP_HIDE_KEY, helpHide.checked ? '1' : '') } catch {} }
-try { if (localStorage.getItem(HELP_HIDE_KEY) !== '1') openHelp() } catch {}
+try { if (!rejoin && localStorage.getItem(HELP_HIDE_KEY) !== '1') openHelp() } catch {}
 
 // 招待リンクのQRコード（参加中ボード内にトグル表示）。ライブラリは必要時だけ esm.sh から
 // 読み込み、生成はクライアント側＝リンクを外部に送らない。
@@ -1212,25 +1228,25 @@ const resetJoinedUI = () => {
   $('setupFields').classList.remove('collapsed')   // join で畳んだ入力欄を戻す
 }
 
-// つなぎ直す：手動の「退出→参加」を1操作にまとめたもの。ただの再参加と違い、TURNの資格情報を
-// 取り直してから入り直す（期限切れのまま入り直しても直らないため。リロードで直るのと同じ状態を作る）。
-// ミュートしていた人が勝手に解除されないよう、状態を持ち越す。
+// つなぎ直す：**ページごとリロードして入り直す**。
+// ここが要点＝Trystero のピアID（selfId）は**ページを読み込んだ時に決まり、部屋の出入りでは
+// 変わらない**。だから「退出→すぐ参加」では相手から見て同じ人のままで、しかも相手がこちらの退出に
+// 気づくには10秒前後かかるため、その窓の中では**相手側が新しい参加者として繋ぎ直してくれない**
+// （実測：つなぎ直した側だけが相手を見失う、が3回中2回）。リロードすれば ID が作り直され、
+// 相手から見て正真正銘の新規参加になる。TURN資格情報とライブラリも取り直される。
+// ＝もともと目指していた「リロードで直るのと同じ状態」に、これで実際になる。
 let retrying = false
 $('retry').onclick = async () => {
   if (retrying || !joinedId) return
   retrying = true
-  const btn = $('retry'), wasMuted = muted
-  btn.disabled = true
-  try {
-    try { await loadIce(true) } catch {}   // 取れなくてもSTUNのみで続行（今より悪くはならない）
-    leaveCall()
-    await joinCall()                       // 参加の⓪が退出の完了を待つので取りこぼさない
-    if (wasMuted && !muted && joinedId) toggleMute()
-  } finally {
-    retrying = false
-    btn.disabled = false
-    if (!joinedId) resetJoinedUI()   // 入り直せなかった時は、退出時に飛ばした見た目の復帰をここで行う
-  }
+  $('retry').disabled = true
+  setState('つなぎ直しています…', 'busy')
+  try { sessionStorage.setItem(REJOIN_KEY, JSON.stringify({ room: joinedId, muted, at: Date.now() })) } catch {}
+  // 先に退出を伝えてからリロードする。相手がこちらの離脱を早く知るほど、戻ったときに
+  // すんなり繋ぎ直してもらえる。ただし完了を待ち続けない（届かなくてもリロードは進める）。
+  leaveCall()
+  try { await Promise.race([leaving, new Promise(r => setTimeout(r, 1200))]) } catch {}
+  location.reload()
 }
 
 // 退出：join が確保したもの（マイク・room・audio要素・解析・wakeLock・タイマー類）を全て解放する。
@@ -1260,6 +1276,13 @@ const leaveCall = () => {
   if (leftRoom) leaving = leftRoom.leave().catch(() => {}).finally(() => { leaving = null })
 }
 $('leave').onclick = leaveCall
+
+// つなぎ直しの後半：リロード後に自分で入り直す（予約は上の rejoin で読み取り済み）。
+// マイク許可が要求される場面なので、失敗しても普通の参加エラーとして見えればよい（部屋名は残る）。
+if (rejoin) {
+  roomInput.value = capRoom(rejoin.room); syncRoomCount(); syncShare()
+  joinCall().then(() => { if (rejoin.muted && !muted && joinedId) toggleMute() })
+}
 
 // ───────── ロビー（通話中の部屋の死活監視・一覧） ─────────
 // 仕組み：Nostr には部屋一覧APIが無いので、固定の隠し部屋 __lobby__ に全員が入り、
