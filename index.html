@@ -1027,7 +1027,11 @@ const render = () => {
   else if (warn) setState(warn + '（相手を探しています…）', 'warn')
   else setState('参加中：' + joinedId + '（相手を探しています…）', 'ok')
 }
-const play = el => el.play().catch(() => { $('unlock').style.display = 'block' })
+// 相手の音声を鳴らす。失敗の理由で扱いを分ける：
+//  NotAllowedError … 本当に自動再生を止められた＝ユーザーの操作が要る。ボタンを出す。
+//  AbortError      … 退出時に dropAudios が srcObject を外して再生要求を中断させただけ。
+//                    これでボタンを出すと「押しても何も起きない」誤警告になる（実際そうなっていた）。
+const play = el => el.play().catch(e => { if (e.name === 'NotAllowedError') $('unlock').style.display = 'block' })
 const allAudios = () => [...audios.values()].flat()
 const dropAudios = id => {
   (audios.get(id) || []).forEach(a => { a.srcObject = null; a.remove() })
@@ -1076,7 +1080,25 @@ document.addEventListener('visibilitychange', () => {
 // 参加・退出・ミュートは、ボタン以外に「つなぎ直す」とロビーからの入室からも呼ばれる。
 // ハンドラ同士が `$('leave').onclick()` のように呼び合うと、UIイベントと処理が癒着して
 // 呼び出し経路が追えなくなるので、**実体は関数に置き、ボタンはそれを指すだけ**にしてある。
+// 参加に失敗したときの後片付け。**マイクを必ず離す**のが要点＝掴んだままだと、繋がっていないのに
+// 録音インジケータが点いたままになり、退出ボタンも出ていないので消す手段がユーザーに無い。
+const failJoin = msg => {
+  if (myStream) { myStream.getTracks().forEach(t => t.stop()); myStream = null }
+  setState(msg, 'error')
+}
+
+// 連打すると getUserMedia が二重に走って2本目のマイクが宙に浮く。さらに2本目の joinRoom は
+// 同じ部屋オブジェクトを掴んでゾンビ検出に引っかかり、**正常に入れているのにエラー表示**になる。
+// 実体は runJoin に置き、ここは再入防止だけを持つ薄い包みにする（本体を1段深くしないため）。
+let joining = false
 const joinCall = async () => {
+  if (joining) return
+  joining = true
+  $('join').disabled = true
+  try { await runJoin() } finally { joining = false; $('join').disabled = false }
+}
+
+const runJoin = async () => {
   // 空欄のときは名前から作る（'lobby' に落とすと、その名前が #lobby としてURLに焼き付き、
   // 以後ハッシュ優先で自動命名が効かなくなって二度と抜けられなくなる）。名前も無ければ促して中止。
   const roomId = capRoom(roomInput.value.trim() || defaultRoom())
@@ -1086,8 +1108,9 @@ const joinCall = async () => {
     return
   }
   roomInput.value = roomId; syncRoomCount()   // 補った／切り詰めた名前を入力欄にも反映する
-  location.hash = encodeURIComponent(roomId)
-  syncShare()   // 参加すると「招待リンク（まだ参加していません）」→「共有リンク」に変わる
+  // location.hash はここでは書かない。参加が成立してから焼き付ける（下の joinedId 設定の直後）。
+  // マイクを拒否した等で中断したのに URL だけ書き換わると、その部屋名がリンクとして残ってしまう。
+  syncShare()   // 入力中の部屋名で「招待リンク（まだ参加していません）」を更新する
 
   // ⓪ 退出処理の完了待ち
   // room.leave() は非同期で、最後まで走って初めて部屋の登録が解除される。
@@ -1102,7 +1125,11 @@ const joinCall = async () => {
   try {
     myStream = await navigator.mediaDevices.getUserMedia({ audio: true })
   } catch (e) {
-    setState('マイクを使えませんでした: ' + e.name, 'error'); return
+    // 生の DOMException 名（NotAllowedError 等）を出しても伝わらないので、起きたことを日本語で言う
+    const why = { NotAllowedError: 'マイクの使用が許可されませんでした。ブラウザの設定を確認してください',
+                  NotFoundError: 'マイクが見つかりませんでした',
+                  NotReadableError: 'マイクを他のアプリが使っているようです' }[e.name]
+    failJoin(why || ('マイクを使えませんでした: ' + e.name)); return
   }
 
   // ② 接続ライブラリ読込
@@ -1111,7 +1138,7 @@ const joinCall = async () => {
   try {
     ({ joinRoom } = await loadTrystero())
   } catch (e) {
-    setState('つなぐ準備に失敗しました: ' + (e.message || e), 'error'); return
+    failJoin('つなぐ準備に失敗しました: ' + (e.message || e)); return
   }
 
   // ③ 部屋に参加（先に TURN 資格情報を取得。失敗しても STUN のみで続行）
@@ -1131,7 +1158,7 @@ const joinCall = async () => {
     // 同じ（死んだ）roomオブジェクトを返す。掴んだままだと永久に繋がらないので弾く。
     if (room === lastRoom) {
       room = null
-      setState('前回の通話の片づけが終わっていません。ページを再読み込みしてください', 'error'); return
+      failJoin('前回の通話の片づけが終わっていません。ページを再読み込みしてください'); return
     }
     lastRoom = room
 
@@ -1175,11 +1202,15 @@ const joinCall = async () => {
     room.onPeerJoin = id => { peers.add(id); peerSince.set(id, Date.now()); room.addStream(myStream, { target: id }); sendProfile(id); warn = ''; setCount(); render(); renderMembers(); soundJoin() }
     room.onPeerLeave = id => { peers.delete(id); profiles.delete(id); peerSince.delete(id); nudges.delete(id); dropAudios(id); removeAnalyser(id); setCount(); render(); renderMembers(); renderAudioWarn([]); soundLeave() }
   } catch (e) {
-    setState('つながりませんでした: ' + (e.message || e), 'error'); return
+    // 部屋は掴めたが後続で失敗した場合、掴んだまま抜けると次の参加がゾンビ検出に引っかかって
+    // 「再読み込みしてください」になる。ここで手放しておけば、もう一度押すだけでやり直せる。
+    if (room) { const dead = room; room = null; leaving = dead.leave().catch(() => {}).finally(() => { leaving = null }) }
+    failJoin('つながりませんでした: ' + (e.message || e)); return
   }
 
   wantWake = true; wake()
   joinedId = roomId; joinedAt = performance.now(); warn = ''; render(); renderMembers()
+  location.hash = encodeURIComponent(roomId)   // 参加が成立してから URL に焼き付ける（失敗時は元のまま）
   // 入室音のガード：参加直後は「既にいる人ぶん」の onPeerJoin が連発するので、1.5秒は鳴らさない。
   soundsArmed = false; setTimeout(() => { if (joinedId === roomId) soundsArmed = true }, 1500)
   syncShare()   // joinedId が入ったのでラベルを「共有リンク」に切り替える（冒頭の呼び出しは未参加のまま）
@@ -1194,6 +1225,10 @@ const joinCall = async () => {
   saveStats(); renderGrow()
   growTimer = setInterval(() => { stats.seconds += 30; saveStats(); renderGrow(); renderMembers() }, 30000)
   $('join').style.display = 'none'; $('mute').style.display = 'flex'; $('leave').style.display = 'flex'
+  // 前の通話で出た「音声を有効化」を必ず消す。隠すのは resetJoinedUI だけだったが、あれは
+  // つなぎ直しの途中では呼ばれない。＝一度出たボタンが居座り、押しても再生するものが無い、
+  // という「効かないボタン」になっていた（join と leave の非対称）。
+  $('unlock').style.display = 'none'
   $('sndPeerRow').style.display = 'flex'   // 入室・退出音のトグルは通話中だけ表示（ミュート/退出と同じ）
   $('retry').hidden = false
   roomInput.disabled = true; lockProfile(true)
