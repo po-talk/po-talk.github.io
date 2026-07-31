@@ -232,6 +232,7 @@
   .lobby-head h2{ margin:0 }
   .lobby-head .retry-btn{ margin-left:auto }
   .lobby-status{ font-size:13px; color:#9fb0c7; margin-bottom:12px }
+  .lobby-more{ font-size:12px; color:#6f7f96; padding:6px 2px }   /* 上限で省略した部屋数の注記 */
   .lobby-viewers{ margin:12px 0 0; font-size:12.5px; color:#6f7f96 }
   .lobby-note{ margin:12px 0 0; font-size:12px; color:#6f7f96; line-height:1.6 }
   .legal{ width:100%; max-width:900px; margin:20px auto 0; text-align:center; font-size:11px; color:#5f6f86; line-height:1.7 }
@@ -475,6 +476,22 @@
 </dialog>
 
 <script type="module">
+// ───────────────────────────────────────────────────────────────────────────
+// 目次（1ファイルに全部入っているので、探すときの手がかり）
+//   ① 起動まわり     PWA判定 / アプリ内ブラウザ検知 / ヘルプ / つなぎ直しの予約
+//   ② 共有           QRコード / 招待リンク / 部屋名の整形（capText・capRoom）
+//   ③ プロフィール   名前・絵文字・初期名のランダム生成
+//   ④ 成長           滞在時間や参加回数から段階を出す（飾り・localStorage）
+//   ⑤ 接続の土台     Trystero設定 / TURN資格情報 / 参加者リスト / 音の解析(VAD)
+//   ⑥ 通知音・EQ     WebAudio で合成。ファイルもCDNも使わない
+//   ⑦ 通話           joinCall / leaveCall / toggleMute / つなぎ直し / 音声の到着監視
+//   ⑧ ロビー         固定の隠し部屋で在室を配り合う。一覧・入室・自動再接続
+//   ⑨ 在室のNostr直publish   ロビーとは別経路（バナー用・部屋名はハッシュ）
+//   ⑩ 閲覧者数       いまページを開いている人数
+//
+// 機能を足すときの鉄則：**joinCall が確保したものは leaveCall で必ず全部返す**。
+// この対称性が崩れると、再参加が古い状態を引き継いで壊れる（対応表は HANDOFF.md）。
+// ───────────────────────────────────────────────────────────────────────────
 const $ = id => document.getElementById(id)
 
 // ホーム追加（PWA）判定。display-mode が使えない古いiOS向けに navigator.standalone も見て
@@ -912,9 +929,14 @@ const ensureAudioCtx = () => {
 
 // ─ 通知音 ─ 音声ファイルもCDNも使わず WebAudio で合成する（単一ファイルのまま）。
 // 入室・退出音は既定オン／新しい部屋の音は既定オフ（オプトイン）。設定は localStorage に保存。
-let sndPeer = localStorage.getItem('pot-call-snd-peer') !== '0'   // 未保存＝オン
-let sndRoom = localStorage.getItem('pot-call-snd-room') === '1'   // 未保存＝オフ
+// キーは定数にしておく（生文字列を読み書き2箇所ずつに散らすと、片方だけ直して設定が
+// 消える事故が起きる。他の localStorage キーも同じ理由で PROFILE_KEY 等に揃えてある）
+const SND_PEER_KEY = 'pot-call-snd-peer'
+const SND_ROOM_KEY = 'pot-call-snd-room'
+let sndPeer = localStorage.getItem(SND_PEER_KEY) !== '0'   // 未保存＝オン
+let sndRoom = localStorage.getItem(SND_ROOM_KEY) === '1'   // 未保存＝オフ
 let soundsArmed = false     // 参加直後の接続バーストで鳴らさないためのガード（1.5秒後に true）
+let soundsTimer = null      // 上のガードを解除するタイマー。join/leave で必ず捨てる（下記）
 const seenRooms = new Set() // ロビーで既に鳴らした部屋名（重複防止・消えたら忘れて再通知する）
 // notes: [[周波数Hz, 開始秒, 長さ秒], …] を柔らかいエンベロープで鳴らす。ロビー音は未解錠なら resume も試みる。
 const playTones = notes => {
@@ -939,9 +961,9 @@ const soundRoom  = () => { if (sndRoom) playTones([[988, 0, 0.09], [1319, 0.08, 
 {
   const peerBox = $('sndPeer'), roomBox = $('sndRoom')
   peerBox.checked = sndPeer; roomBox.checked = sndRoom
-  peerBox.onchange = () => { sndPeer = peerBox.checked; localStorage.setItem('pot-call-snd-peer', sndPeer ? '1' : '0') }
+  peerBox.onchange = () => { sndPeer = peerBox.checked; localStorage.setItem(SND_PEER_KEY, sndPeer ? '1' : '0') }
   roomBox.onchange = () => {
-    sndRoom = roomBox.checked; localStorage.setItem('pot-call-snd-room', sndRoom ? '1' : '0')
+    sndRoom = roomBox.checked; localStorage.setItem(SND_ROOM_KEY, sndRoom ? '1' : '0')
     if (sndRoom) { ensureAudioCtx(); soundRoom() }   // オンにした操作で解錠＋見本を1回鳴らす
   }
 }
@@ -1037,10 +1059,17 @@ addEventListener('resize', () => {
 // 繋がってさえいれば、幽霊ピアのハンドシェイク失敗などは表に出さない。
 const render = () => {
   if (!joinedId) return
-  if (peers.size) setState('通話中：' + joinedId, 'ok')
+  // 圏外・Wi-Fiオフでも参加自体は成功する（マイクはローカル、ライブラリは読込済み）。
+  // 何も言わないと「誰も来ない部屋」に見えて原因が分からないので、まずこれを出す。
+  // navigator.onLine は「回線があるか」までしか分からないが、外れても実害のない案内なのでこれで十分。
+  if (!navigator.onLine) setState('インターネットに繋がっていません', 'error')
+  else if (peers.size) setState('通話中：' + joinedId, 'ok')
   else if (warn) setState(warn + '（相手を探しています…）', 'warn')
   else setState('参加中：' + joinedId + '（相手を探しています…）', 'ok')
 }
+// 通話の途中で圏外になった／戻ったときにも表示を追従させる（通話中のみ render が中身を持つ）
+addEventListener('online', render)
+addEventListener('offline', render)
 // 相手の音声を鳴らす。失敗の理由で扱いを分ける：
 //  NotAllowedError … 本当に自動再生を止められた＝ユーザーの操作が要る。ボタンを出す。
 //  AbortError      … 退出時に dropAudios が srcObject を外して再生要求を中断させただけ。
@@ -1206,11 +1235,16 @@ const runJoin = async () => {
 
     room.addStream(myStream)
     room.onPeerStream = (stream, id) => {
+      // 同じ相手から何度もストリームが来る（再ネゴ、そして「送り直して」を頼んだ結果）。
+      // 足し続けると無音の <audio> と古い MediaStream への参照が溜まるので、1人につき1本に保つ。
+      const cur = audios.get(id) || []
+      if (cur.some(a => a.srcObject && a.srcObject.id === stream.id)) return   // 同じものの再到着
+      dropAudios(id)            // 別のストリームに入れ替わった＝古い方は用済み
       const a = document.createElement('audio')
       a.srcObject = stream; a.autoplay = true; a.playsInline = true
       document.body.appendChild(a)
-      audios.set(id, [...(audios.get(id) || []), a])
-      addAnalyser(id, stream)   // 相手の音量を測って絵文字を跳ねさせる
+      audios.set(id, [a])
+      addAnalyser(id, stream)   // 相手の音量を測って絵文字を跳ねさせる（中で古い方を外している）
       play(a)
     }
     room.onPeerJoin = id => { peers.add(id); peerSince.set(id, Date.now()); room.addStream(myStream, { target: id }); sendProfile(id); warn = ''; setCount(); render(); renderMembers(); soundJoin() }
@@ -1226,7 +1260,11 @@ const runJoin = async () => {
   joinedId = roomId; joinedAt = performance.now(); warn = ''; render(); renderMembers()
   location.hash = encodeURIComponent(roomId)   // 参加が成立してから URL に焼き付ける（失敗時は元のまま）
   // 入室音のガード：参加直後は「既にいる人ぶん」の onPeerJoin が連発するので、1.5秒は鳴らさない。
-  soundsArmed = false; setTimeout(() => { if (joinedId === roomId) soundsArmed = true }, 1500)
+  // 前回のタイマーが生きていると、入り直した直後にそれが発火して早く解禁されてしまう（＝入室音が
+  // 1回多く鳴る）。掛け直す前に必ず捨てる。leave 側でも捨てている（join/leave の対称）。
+  soundsArmed = false
+  clearTimeout(soundsTimer)
+  soundsTimer = setTimeout(() => { soundsArmed = true; soundsTimer = null }, 1500)
   syncShare()   // joinedId が入ったのでラベルを「共有リンク」に切り替える（冒頭の呼び出しは未参加のまま）
   addAnalyser('self', myStream)   // 自分のマイク音量でも絵文字を跳ねさせる（ミュート中は無反応）
   startEq()                       // 点字EQの飾りを開始（音量で下から伸びる）
@@ -1311,7 +1349,9 @@ const leaveCall = () => {
   stopHeartbeat()  // ロビーへ「退出した」を通知＋定期発信を停止（ロビー部屋自体は閲覧用に残す）
   if (growTimer) { clearInterval(growTimer); growTimer = null }   // 成長の時間加算を停止
   renderGrow()
-  joinedId = null; warn = ''; usingRelay = false; soundsArmed = false; renderMembers(); renderLobby()
+  joinedId = null; warn = ''; usingRelay = false
+  soundsArmed = false; clearTimeout(soundsTimer); soundsTimer = null   // 入室音の解禁タイマーも捨てる
+  renderMembers(); renderLobby()
   muted = false; renderMute()
   resetQr()   // QRトグルを畳んでおく（次の参加で古いリンクを残さない）
   syncShare() // 「共有リンク」→「招待リンク（まだ参加していません）」に戻す
@@ -1437,12 +1477,23 @@ if (!EQ_REDUCE) setInterval(() => {
   document.querySelectorAll('.room-eq').forEach(el => { el.textContent = lobbyEqFrame(+el.dataset.act || 0) })
 }, 150)
 
+// 在室は自己申告なので、改造クライアントが偽の部屋を大量に流せば一覧はいくらでも伸びる。
+// 描画数に上限を置いて DOM の暴発を防ぐ（通常は数件なので、まず当たらない安全弁）。
+// 新部屋の音も同じ理由で最短間隔を設ける（連打されると鳴りっぱなしになるため）。
+const LOBBY_MAX_ROOMS = 50
+const ROOM_SOUND_GAP_MS = 10000
+let lastRoomSound = 0
+
 const renderLobby = () => {
   const list = $('lobbyList'), status = $('lobbyStatus')
   if (!lobbyRoom) return  // 接続前は初期メッセージのまま
   // 部屋名 → 参加者[] に集約。自分は自分の発信を受け取らないので、通話中なら合成して足す。
   const byRoom = new Map()
-  const push = (room, p) => { (byRoom.get(room) || byRoom.set(room, []).get(room)).push(p) }
+  const push = (room, p) => {
+    let a = byRoom.get(room)
+    if (!a) byRoom.set(room, a = [])
+    a.push(p)
+  }
   presences.forEach(v => push(v.room, { name: v.name, emoji: v.emoji, muted: v.muted, stage: v.stage, elapsed: v.elapsed, ts: v.ts, talk: v.talk }))
   if (joinedId) push(joinedId, { name: profile.name, emoji: profile.emoji, muted, stage: stageOf(), elapsed: mySeconds(), ts: Date.now(), talk: talkLevel })
   list.replaceChildren()
@@ -1456,10 +1507,17 @@ const renderLobby = () => {
   // 自分の部屋は除外。消えた部屋は忘れるので、再び立てば改めて鳴る（＝死活監視向き）。
   const seeded = Date.now() - lobbySince >= DISCOVER_MS
   names.forEach(r => {
-    if (!seenRooms.has(r)) { if (seeded && r !== joinedId) soundRoom(); seenRooms.add(r) }
+    if (seenRooms.has(r)) return
+    seenRooms.add(r)
+    if (!seeded || r === joinedId) return
+    // まとめて現れたときに鳴りっぱなしにしない。取りこぼしても「新しい部屋がある」ことは
+    // 一覧を見れば分かるので、間隔を空けるほうが実害が小さい。
+    if (Date.now() - lastRoomSound < ROOM_SOUND_GAP_MS) return
+    lastRoomSound = Date.now()
+    soundRoom()
   })
   seenRooms.forEach(r => { if (!byRoom.has(r)) seenRooms.delete(r) })
-  names.forEach(room => {
+  names.slice(0, LOBBY_MAX_ROOMS).forEach(room => {
     const people = byRoom.get(room)
     // 活発さ＝その部屋の誰かが話していれば、その最大値。内側のリングの濃さで示す
     const act = Math.max(0, ...people.map(p => p.talk || 0))
@@ -1490,6 +1548,13 @@ const renderLobby = () => {
     btn.onclick = () => selectRoom(room)
     list.append(btn)
   })
+  // 省略したぶんは黙って消さずに件数だけ知らせる（「全部出ている」と誤解させないため）
+  if (names.length > LOBBY_MAX_ROOMS) {
+    const more = document.createElement('div')
+    more.className = 'lobby-more'
+    more.textContent = 'ほか ' + (names.length - LOBBY_MAX_ROOMS) + ' 部屋（多すぎるため省略しています）'
+    list.append(more)
+  }
 }
 
 // 一覧クリック：タップした部屋にそのまま入室する（＝参加ボタンと同じ意味）。
@@ -1614,6 +1679,9 @@ document.addEventListener('visibilitychange', () => {
   // 裏に回っている間は setInterval が絞られ接続が古くなる。復帰時、前回接続から時間が経っていれば入り直す。
   if (!document.hidden && Date.now() - lobbySince > 60000) initLobby(true, true)
 })
+// 回線が戻ったとき。圏外の間に張っていた接続はもう死んでいるが、上の定期復旧は最大9分先なので
+// 「ネットは戻ったのにロビーが空のまま」が延々と続く（実際に遭遇した）。戻った時点で入り直す。
+addEventListener('online', () => initLobby(true, true))
 // 招待リンクの初期表示。joinedId の宣言より後で呼ぶ必要があるのでここに置いている
 // （syncShare は joinedId を参照するため、宣言前に呼ぶと TDZ で落ちる）
 syncShare()
