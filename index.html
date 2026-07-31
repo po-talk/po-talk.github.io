@@ -1003,7 +1003,10 @@ document.addEventListener('visibilitychange', () => {
   if (wantWake && document.visibilityState === 'visible') wake()
 })
 
-$('join').onclick = async () => {
+// 参加・退出・ミュートは、ボタン以外に「つなぎ直す」とロビーからの入室からも呼ばれる。
+// ハンドラ同士が `$('leave').onclick()` のように呼び合うと、UIイベントと処理が癒着して
+// 呼び出し経路が追えなくなるので、**実体は関数に置き、ボタンはそれを指すだけ**にしてある。
+const joinCall = async () => {
   // 空欄のときは名前から作る（'lobby' に落とすと、その名前が #lobby としてURLに焼き付き、
   // 以後ハッシュ優先で自動命名が効かなくなって二度と抜けられなくなる）。名前も無ければ促して中止。
   const roomId = capRoom(roomInput.value.trim() || defaultRoom())
@@ -1117,6 +1120,7 @@ $('join').onclick = async () => {
   // 通話中は名前も部屋名も変えられないので、入力欄ごと畳む（名前は参加者リスト、部屋名は状態表示に出ている）
   $('setupFields').classList.add('collapsed')
 }
+$('join').onclick = joinCall
 
 // ミュートボタン。アイコン＝今の状態（マイクに斜線が出る／消える）、文字＝押すと起きること。
 // DOMは作り直さず class と textContent だけ変える（innerHTML差し替えの再描画ちらつきを防ぐ）。
@@ -1126,17 +1130,15 @@ const renderMute = () => {
 }
 renderMute()   // 初期表示
 
-$('mute').onclick = () => {
+const toggleMute = () => {
   muted = !muted; myStream.getAudioTracks().forEach(t => t.enabled = !muted)
   renderMute()
   if (profileAction) profileAction.send(myProfilePayload()).catch(() => {})  // 全員へミュート状態を配信
   sendHeartbeat()  // ロビーの自分にもミュート状態を反映
   renderMembers(); renderLobby()  // 自分の行／ロビーの 🔇 を即反映
 }
+$('mute').onclick = toggleMute
 
-// つなぎ直す：手動の「退出→参加」を1操作にまとめたもの。ただの再参加と違い、TURNの資格情報を
-// 取り直してから入り直す（期限切れのまま入り直しても直らないため。リロードで直るのと同じ状態を作る）。
-// ミュートしていた人が勝手に解除されないよう、状態を持ち越す。
 // 参加中の見た目を「未参加」に戻す一式。退出時と、つなぎ直しに失敗して参加できなかった時に使う。
 const resetJoinedUI = () => {
   $('join').style.display = 'flex'; $('mute').style.display = 'none'; $('leave').style.display = 'none'; $('unlock').style.display = 'none'
@@ -1146,6 +1148,9 @@ const resetJoinedUI = () => {
   $('setupFields').classList.remove('collapsed')   // join で畳んだ入力欄を戻す
 }
 
+// つなぎ直す：手動の「退出→参加」を1操作にまとめたもの。ただの再参加と違い、TURNの資格情報を
+// 取り直してから入り直す（期限切れのまま入り直しても直らないため。リロードで直るのと同じ状態を作る）。
+// ミュートしていた人が勝手に解除されないよう、状態を持ち越す。
 let retrying = false
 $('retry').onclick = async () => {
   if (retrying || !joinedId) return
@@ -1154,9 +1159,9 @@ $('retry').onclick = async () => {
   btn.disabled = true
   try {
     try { await loadIce(true) } catch {}   // 取れなくてもSTUNのみで続行（今より悪くはならない）
-    $('leave').onclick()
-    await $('join').onclick()              // 参加の⓪が退出の完了を待つので取りこぼさない
-    if (wasMuted && !muted && joinedId) $('mute').onclick()
+    leaveCall()
+    await joinCall()                       // 参加の⓪が退出の完了を待つので取りこぼさない
+    if (wasMuted && !muted && joinedId) toggleMute()
   } finally {
     retrying = false
     btn.disabled = false
@@ -1164,7 +1169,9 @@ $('retry').onclick = async () => {
   }
 }
 
-$('leave').onclick = () => {
+// 退出：join が確保したもの（マイク・room・audio要素・解析・wakeLock・タイマー類）を全て解放する。
+// **この対称性だけが再参加の破綻を防いでいる**ので、join に足したら必ずここにも足すこと。
+const leaveCall = () => {
   const leftRoom = room; room = null
   if (myStream) { myStream.getTracks().forEach(t => t.stop()); myStream = null }
   ;[...audios.keys()].forEach(dropAudios)
@@ -1187,6 +1194,7 @@ $('leave').onclick = () => {
   // 失敗しても再参加を塞がないよう握りつぶす（掴んだ場合は上のゾンビ検出が拾う）。
   if (leftRoom) leaving = leftRoom.leave().catch(() => {}).finally(() => { leaving = null })
 }
+$('leave').onclick = leaveCall
 
 // ───────── ロビー（通話中の部屋の死活監視・一覧） ─────────
 // 仕組み：Nostr には部屋一覧APIが無いので、固定の隠し部屋 __lobby__ に全員が入り、
@@ -1354,12 +1362,12 @@ const selectRoom = room => {
   if (room === joinedId) return
   if (joinedId) {
     if (!confirm('参加中の部屋「' + joinedId + '」を退出して「' + room + '」に移りますか？')) return
-    $('leave').onclick()   // 今の部屋を退出（非同期の後片付けは leaving が保持し、次の参加で待たれる）
+    leaveCall()   // 今の部屋を退出（非同期の後片付けは leaving が保持し、次の参加で待たれる）
   } else {
     if (!confirm('「' + room + '」に参加しますか？')) return   // 未参加時のミスタップ防止
   }
   roomInput.value = room; syncRoomCount(); syncShare()
-  $('join').onclick()      // そのまま入室。参加の⓪で leaving を待つので、部屋移動でも取りこぼさない
+  joinCall()      // そのまま入室。参加の⓪で leaving を待つので、部屋移動でも取りこぼさない
 }
 
 const DISCOVER_MS = 8000     // この間は「探しています」と出す（発見に数秒かかるため）
