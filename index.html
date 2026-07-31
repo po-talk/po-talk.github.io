@@ -585,8 +585,22 @@ $('copy').onclick    = () => copyLink($('copy'))
 // 上限の根拠は QRコード。日本語1文字はURLエンコードで9文字になるため、実測で
 // 20文字→57×57（読みやすい）/ 30文字→69×69（やや細かい）/ 60文字→93×93（かなり細かい）/
 // 255文字を超えると生成そのものが失敗する。実用的に読み取れる上限として30文字を採る。
+// 他人から届いた文字列（部屋名・名前・絵文字）を表示に使う前に必ず通す整形。**受信口はすべてここ**。
+//  ・コードポイント単位で切る … UTF-16 の slice は絵文字を途中で割って「�」を作る
+//  ・制御文字と双方向制御を落とす … 改行を混ぜると confirm() の文面を偽装でき（部屋名は
+//    「〇〇に参加しますか？」にそのまま入る）、U+202E などは表示順を反転できる
+// ZWJ(U+200D) は**落とさない**：絵文字の結合に使われており、消すと 👨‍👩‍👧 が分解されてしまう。
+// 内訳：制御文字 / U+061C アラビア文字マーク / U+200E,200F 左右マーク /
+//       U+202A-202E 埋め込み・上書き / U+2066-2069 分離。**エスケープで書くこと**
+//       （実体を貼ると見えない文字がソースに埋まり、後から誰も気づけなくなる）
+const UNSAFE_CHARS = /[\p{Cc}\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/gu
+const capText = (v, max, fallback = '') =>
+  [...String(v ?? fallback).replace(UNSAFE_CHARS, '')].slice(0, max).join('')
+
 const ROOM_MAX = 30
-const capRoom = s => [...String(s)].slice(0, ROOM_MAX).join('')   // 絵文字を壊さないようコードポイント単位で切る
+// 部屋名は識別子なので、**参加時と受信時で必ず同じ処理**を通すこと（片方だけ整形すると同じ部屋に
+// 入れなくなる）。だから入口も出口も capRoom を経由させている。
+const capRoom = s => capText(s, ROOM_MAX)
 const roomInput = $('room')
 // 文字数カウンタ。絵文字を1文字と数えるためコードポイント単位で数える（capRoom と同じ数え方）。
 // value への代入では input イベントが飛ばないので、値を書き換えた箇所では必ずこれを呼ぶこと。
@@ -1170,10 +1184,10 @@ const runJoin = async () => {
     profileAction.onMessage = (data, { peerId }) => {
       const prev = profiles.get(peerId) || {}
       profiles.set(peerId, {
-        name: String(data?.name ?? prev.name ?? '').slice(0, 20),
-        emoji: String(data?.emoji ?? prev.emoji ?? '🙂').slice(0, 8),
+        name: capText(data?.name ?? prev.name, 20),
+        emoji: capText(data?.emoji ?? prev.emoji, 8, '🙂'),
         muted: !!data?.muted,
-        stage: String(data?.stage ?? prev.stage ?? '').slice(0, 4),
+        stage: capText(data?.stage ?? prev.stage, 4),
         // 経路は boolean のときだけ採用（旧クライアントは送らない→undefinedのまま＝アイコン非表示）
         relay: typeof data?.relay === 'boolean' ? data.relay : prev.relay
       })
@@ -1561,9 +1575,9 @@ const openLobby = async (again, status, soft = false) => {
     lobbyPresence.onMessage = (d, { peerId }) => {
       if (!d || d.room == null) presences.delete(peerId)
       else presences.set(peerId, {
-        room: capRoom(d.room), name: String(d.name || '').slice(0, 20),
-        emoji: String(d.emoji || '🙂').slice(0, 8), muted: !!d.muted,
-        stage: String(d.stage || '').slice(0, 4), ts: Date.now(),
+        room: capRoom(d.room), name: capText(d.name, 20),
+        emoji: capText(d.emoji || '🙂', 8), muted: !!d.muted,
+        stage: capText(d.stage, 4), ts: Date.now(),
         // 相手が「その部屋に入ってからの秒数」。受信時刻(ts)を足して現在値に補正して使う。
         // 上限は自己申告の暴走ガード（改造クライアント対策）。常設部屋が何日も続くので 30日 に設定。
         elapsed: Math.max(0, Math.min(Number(d.elapsed) || 0, 2592000)),
