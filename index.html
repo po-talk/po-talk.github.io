@@ -195,6 +195,9 @@
   .profile.locked > summary{ opacity:.5; pointer-events:none }
   /* 参加者リスト（絵文字＋名前） */
   .members{ margin-top:12px; display:flex; flex-direction:column; gap:6px }
+  /* 音が届いていない相手のお知らせ。不具合ではなく「試せることがある」の温度で（黄色＝注意止まり） */
+  .audio-warn{ margin-top:10px; padding:9px 11px; border-radius:10px; font-size:13px; line-height:1.5;
+    background:rgba(255,210,77,.10); border:1px solid rgba(255,210,77,.35); color:#ffd24d }
   /* 点字ブロック（U+2800〜）で作るオーディオEQ風の飾り。各セルが2×3ドットなので
      空・下・中・上の4段階がそのまま出せる（⠀⠤⠶⠿）。通話中だけ表示、装飾なので aria-hidden。 */
   .eq{ margin-top:12px; font-family:'Courier New',ui-monospace,monospace; font-size:20px;
@@ -349,6 +352,8 @@
     <div style="margin-top:8px">いま一緒にいる人：<span class="peers" id="count">0</span> 人</div>
     <label class="snd-opt" id="sndPeerRow" style="display:none"><input type="checkbox" id="sndPeer"> 🔔 入室・退出を音で知らせる</label>
     <div id="members" class="members"></div>
+    <!-- 音が届かない相手がいるときだけ出る。頼んでも直らなかった＝本人の操作が要る場合の最終手段 -->
+    <div id="audioWarn" class="audio-warn" hidden></div>
     <div id="eq" class="eq" hidden aria-hidden="true"></div>
     <div style="margin-top:10px" id="shareWrap" hidden>
       <div id="qrBox" class="qr-inline" hidden>
@@ -737,6 +742,20 @@ const peers = new Set()
 const audios = new Map()   // peerId → audio要素[]（相手の退出時に個別破棄する）
 const profiles = new Map() // peerId → {name, emoji, muted, relay}（相手から届いたプロフィール）
 
+// ── 音声の到着監視 ──────────────────────────────────────────────
+// 「参加者リストには相手が出ているのに、音だけ来ない」ことがある（入り直したあとに起きやすい）。
+// リストに出る＝データチャネルは生きている＝プロフィールは届いている、ということなので、
+// 壊れているのは音声ストリームだけ。相手が入り直すと直るのは、相手側で onPeerJoin → addStream が
+// やり直されるから。＝**入り直してもらわなくても、そのデータチャネルで「送り直して」と頼めばよい**。
+// 直せる力を持っているのは受け取れていない側ではなく送る側なので、自力の「つなぎ直す」より確実。
+let nudgeAction = null
+const peerSince = new Map()   // peerId → 接続を認識した時刻（音の到着を待ち始めた起点）
+const nudges = new Map()      // peerId → {n: 送った回数, at: 最後に送った時刻}
+let audioWatch = null         // 監視タイマー（join で開始・leave で停止）
+const AUDIO_WAIT_MS = 10000   // これだけ待って音が来なければ送り直しを頼む（相手の準備が遅いだけの場合を避ける）
+const NUDGE_EVERY_MS = 6000   // 頼む間隔
+const NUDGE_MAX = 3           // これだけ頼んで駄目なら諦めて本人に知らせる（接続自体が壊れている場合）
+
 // 自分の現在のプロフィール送信データ（名前・絵文字・ミュート状態・成長段階・接続経路）。
 // relay は「自分が中継経由か」の自己申告（各自のブラウザだけが確実に知る）。参加者リストに経路アイコンを出す。
 const myProfilePayload = () => ({ name: profile.name, emoji: profile.emoji, muted, stage: stageOf(), relay: usingRelay })
@@ -1001,6 +1020,38 @@ const dropAudios = id => {
 
 $('unlock').onclick = () => { if (audioCtx) audioCtx.resume().catch(() => {}); allAudios().forEach(a => a.play().catch(() => {})); $('unlock').style.display = 'none' }
 
+// 音が届いていない相手を見張る。まず黙って「送り直して」と頼み（相手の入り直しと同じ効果）、
+// それでも来なければ本人に知らせる。無音のまま本人が理由に気づけないのが一番まずいので、
+// 直せるうちは黙って直し、直せない時だけ言う、の二段にしてある。
+const renderAudioWarn = ids => {
+  const el = $('audioWarn')
+  el.hidden = !ids.length
+  if (!ids.length) return
+  const who = ids.map(id => (profiles.get(id) || {}).name || '相手').join('、')
+  el.textContent = '🔈 ' + who + ' の音がまだ届いていません。「つなぎ直す」を試してみてください'
+}
+const checkAudioArrival = () => {
+  if (!room) return
+  const now = Date.now()
+  const stuck = []
+  peers.forEach(id => {
+    // 届いていれば覚えを捨てる（また切れたら最初から頼み直せるように）
+    if ((audios.get(id) || []).length) { nudges.delete(id); return }
+    if (now - (peerSince.get(id) || now) < AUDIO_WAIT_MS) return   // まだ待つ（相手の準備中かもしれない）
+    const st = nudges.get(id) || { n: 0, at: 0 }
+    if (st.n >= NUDGE_MAX) { stuck.push(id); return }              // 頼み尽くした＝接続自体が壊れている
+    if (now - st.at < NUDGE_EVERY_MS) return
+    // 相手のクライアントが古いと 'nudge' を知らないので無反応。その場合は回数を使い切って下の表示に落ちる。
+    if (nudgeAction) nudgeAction.send(1, { target: id }).catch(() => {})
+    nudges.set(id, { n: st.n + 1, at: now })
+  })
+  renderAudioWarn(stuck)
+}
+const stopAudioWatch = () => {
+  if (audioWatch) { clearInterval(audioWatch); audioWatch = null }
+  peerSince.clear(); nudges.clear(); renderAudioWarn([])
+}
+
 const wake = async () => { try { wakeLock = await navigator.wakeLock.request('screen') } catch {} }
 document.addEventListener('visibilitychange', () => {
   if (wantWake && document.visibilityState === 'visible') wake()
@@ -1087,6 +1138,15 @@ const joinCall = async () => {
     }
     const sendProfile = id => profileAction.send(myProfilePayload(), { target: id }).catch(() => {})
 
+    // 「音が届いていないので送り直して」の受け口。頼まれた側は自分のストリームを相手へ入れ直す＝
+    // 相手が入り直したときに起きることと同じ。onMessage は profile と同じくピア接続より前に置く。
+    nudgeAction = room.makeAction('nudge')
+    nudgeAction.onMessage = (_data, { peerId }) => {
+      // 頼まれた側から見て相手が既に切れている（＝こちらは見失っている）ことがある。その時の
+      // addStream は失敗するが、頼んだ側の状況は改善しようがないので黙って諦める。
+      try { if (myStream && room) room.addStream(myStream, { target: peerId }) } catch {}
+    }
+
     room.addStream(myStream)
     room.onPeerStream = (stream, id) => {
       const a = document.createElement('audio')
@@ -1096,8 +1156,8 @@ const joinCall = async () => {
       addAnalyser(id, stream)   // 相手の音量を測って絵文字を跳ねさせる
       play(a)
     }
-    room.onPeerJoin = id => { peers.add(id); room.addStream(myStream, { target: id }); sendProfile(id); warn = ''; setCount(); render(); renderMembers(); soundJoin() }
-    room.onPeerLeave = id => { peers.delete(id); profiles.delete(id); dropAudios(id); removeAnalyser(id); setCount(); render(); renderMembers(); soundLeave() }
+    room.onPeerJoin = id => { peers.add(id); peerSince.set(id, Date.now()); room.addStream(myStream, { target: id }); sendProfile(id); warn = ''; setCount(); render(); renderMembers(); soundJoin() }
+    room.onPeerLeave = id => { peers.delete(id); profiles.delete(id); peerSince.delete(id); nudges.delete(id); dropAudios(id); removeAnalyser(id); setCount(); render(); renderMembers(); renderAudioWarn([]); soundLeave() }
   } catch (e) {
     setState('つながりませんでした: ' + (e.message || e), 'error'); return
   }
@@ -1109,6 +1169,7 @@ const joinCall = async () => {
   syncShare()   // joinedId が入ったのでラベルを「共有リンク」に切り替える（冒頭の呼び出しは未参加のまま）
   addAnalyser('self', myStream)   // 自分のマイク音量でも絵文字を跳ねさせる（ミュート中は無反応）
   startEq()                       // 点字EQの飾りを開始（音量で下から伸びる）
+  stopAudioWatch(); audioWatch = setInterval(checkAudioArrival, 2000)   // 音が来ない相手に送り直しを頼む監視を開始
   startHeartbeat()                // ロビーへ自分の在室（部屋名・名前・絵文字）を定期発信
   renderLobby()                   // 自分の部屋を一覧に即反映（here ハイライト）
   // 成長：参加回数と「使った日数」を加算し、通話中は30秒ごとに時間を貯める
@@ -1180,6 +1241,7 @@ const leaveCall = () => {
   ;[...audios.keys()].forEach(dropAudios)
   wantWake = false; if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null }
   peers.clear(); profiles.clear(); setCount(); profileAction = null
+  stopAudioWatch(); nudgeAction = null   // 音声到着の監視を停止＋待ち時間と催促回数の記憶を捨てる
   stopVad(); resetTalk(); stopEq()   // 解析ループ停止＋AudioContext破棄（join が確保したものを全て解放）
   stopHeartbeat()  // ロビーへ「退出した」を通知＋定期発信を停止（ロビー部屋自体は閲覧用に残す）
   if (growTimer) { clearInterval(growTimer); growTimer = null }   // 成長の時間加算を停止
