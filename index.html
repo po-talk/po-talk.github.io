@@ -1411,7 +1411,12 @@ const publishPresence = async () => {
     if (room !== joinedId) return   // 非同期の間に退出/部屋移動していたら中止
     const evt = nt.finalizeEvent({
       kind: NOSTR_KIND, created_at: Math.floor(Date.now() / 1000), tags: [['d', d]],
-      content: JSON.stringify({ n: profile.name, e: profile.emoji, muted, stage: stageOf() })   // 部屋名は入れない
+      // **公開リレーに載せるのは、読み取り側が実際に使うものだけ**にする（今は絵文字だけ）。
+      // 以前は名前・ミュート・成長段階も入れていたが、banner.html は e しか読んでおらず、
+      // 誰にも使われないまま公開情報として流れ続けていた。部屋名をハッシュにして「知らない部屋は
+      // 分からない」ようにしている設計とも噛み合っていない（名前が平文だと照合の答え合わせができる）。
+      // 必要になったら足せばよいが、**一度流したものは取り消せない**ので既定は最小にする。
+      content: JSON.stringify({ e: profile.emoji })   // 部屋名も名前も入れない
     }, nostrKey)
     // publish は各リレーごとの Promise 配列。落ちるリレー（接続失敗・PoW要求 NIP-13 等）は普通にあるので
     // 1本ずつ握りつぶす（どれか1つでも受理されれば購読側に届く）。未処理rejectを出さないため必須。
