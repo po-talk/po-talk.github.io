@@ -491,6 +491,7 @@
 <script type="module">
 // ───────────────────────────────────────────────────────────────────────────
 // 目次（1ファイルに全部入っているので、探すときの手がかり）
+//   ⓪ 通話の状態     call オブジェクト（join が確保し leave が返すもの）
 //   ① 起動まわり     PWA判定 / アプリ内ブラウザ検知 / ヘルプ / つなぎ直しの予約
 //   ② 共有           QRコード / 招待リンク / 部屋名の整形（capText・capRoom）
 //   ③ プロフィール   名前・絵文字・初期名のランダム生成
@@ -503,13 +504,58 @@
 //   ⑩ 閲覧者数       いまページを開いている人数
 //
 // 機能を足すときの鉄則：**joinCall が確保したものは leaveCall で必ず全部返す**。
-// この対称性が崩れると、再参加が古い状態を引き継いで壊れる（対応表は HANDOFF.md）。
+// この対称性が崩れると、再参加が古い状態を引き継いで壊れる。通話中の状態は ⓪ の CALL_INIT に
+// 集めてあり、leaveCall がそこから丸ごと戻すので、**足す場所は CALL_INIT**（値だけなら
+// それで完結する。タイマーやトラックなど「止める」処理があるときだけ leaveCall の①にも足す）。
 // ───────────────────────────────────────────────────────────────────────────
 // 版。**ここが唯一の定義**（画面表示もここから入れる）。ファイル冒頭のコメントにも同じ番号が
 // 書いてあるので、上げるときは両方直すこと（食い違いは test/smoke.py の T15 が検出する）。
 const APP_VERSION = 'v0.5.0'
 
 const $ = id => document.getElementById(id)
+
+// ⓪ 通話の状態。**読込時に syncShare() が call.joinedId を読む**ので、他の何より先に
+// 宣言しておくこと（後ろに置くと TDZ で「Cannot access 'call' before initialization」に
+// なり、アプリ全体が起動しなくなる）。
+//
+// 通話のライフサイクル状態はここに全部ある。狙いは**「join が確保したものは leave が全部返す」を
+// 注意力ではなく構造で守る**こと。leaveCall は「副作用 → resetCall() → leaving」の3段になっていて、
+// **ここに1行足せば leave 側の戻し忘れは原理的に起きない**（以前は対応表を目で追うしかなかった）。
+// seal してあるので、綴りを誤った代入は静かに無視されず TypeError になる（単独の let なら
+// ReferenceError で気づけたはずの間違いを、オブジェクト化で失わないため）。
+const CALL_INIT = () => ({
+  room: null,           // 参加中の Trystero 部屋（ロビーの lobbyRoom とは別物）
+  stream: null,         // 自分のマイク
+  muted: false,         // 自分がミュート中か（トラックの enabled と対で持つ）
+  joinedId: null,       // 参加中の部屋名（null＝未参加）
+  joinedAt: 0,          // 参加した時刻。継続時間は「入ってから何秒」の差分で交換するので、
+                        // 端末ごとの時計ズレの影響を受けない。巻き戻らない performance.now() を使う
+  usingRelay: false,    // この通話がTURN中継経由か（!!ice）＝相手にIPが見えるかの自己申告
+  wantWake: false,      // 画面を消さない状態にしたいか（復帰時に取り直すかの判断に使う）
+  wakeLock: null,       // 実際に取れた WakeLockSentinel
+  peers: new Set(),     // 接続できている相手の peerId
+  audios: new Map(),    // peerId → audio要素[]（相手の退出時に個別破棄する）
+  profiles: new Map(),  // peerId → {name, emoji, muted, relay}（相手から届いたプロフィール）
+  profileAction: null,  // 名前・絵文字・ミュート状態を配るデータチャネル（参加中だけ有効）
+  nudgeAction: null,    // 「音が届いていないので送り直して」を頼むデータチャネル
+  audioWatch: null,     // 音声の到着を見張るタイマー（join で開始・leave で停止）
+  peerSince: new Map(), // peerId → 接続を認識した時刻（音の到着を待ち始めた起点）
+  nudges: new Map(),    // peerId → {n: 送った回数, at: 最後に送った時刻}
+  warn: '',             // 直近のピア単位エラー（誰とも繋がっていない時だけ表示する）
+  growTimer: null,      // 30秒ごとに滞在時間を貯めるタイマー
+  soundsArmed: false,   // 入室音の解禁フラグ（参加直後1.5秒は接続が連発するので鳴らさない）
+  soundsTimer: null     // 上を解禁するタイマー
+})
+// **テンプレートに入れない2つ**。どちらも「退出しても引き継ぐ」ものなので、reset で戻すと壊れる。
+const call = Object.seal({
+  ...CALL_INIT(),
+  lastRoom: null,       // ゾンビroom検出用。**退出しても捨てない**（次の参加で同一かを見る）
+  leaving: null         // 進行中の退出処理（room.leave() は非同期）。次の参加はこれを待つ。
+                        // leaveCall では resetCall() の**後**に入れる
+})
+// 値を初期状態へ戻す。**タイマーの停止やトラックの停止は代替できない**ので、
+// 呼ぶ側が先に副作用を済ませてから使うこと（leaveCall の①→②の順）。
+const resetCall = () => Object.assign(call, CALL_INIT())
 $('ver').textContent = APP_VERSION
 
 // ホーム追加（PWA）判定。display-mode が使えない古いiOS向けに navigator.standalone も見て
@@ -639,18 +685,11 @@ const capRoom = s => capText(s, ROOM_MAX)
 const roomInput = $('room')
 // 文字数カウンタ。絵文字を1文字と数えるためコードポイント単位で数える（capRoom と同じ数え方）。
 // value への代入では input イベントが飛ばないので、値を書き換えた箇所では必ずこれを呼ぶこと。
-// 参加中の部屋名（null＝未参加）と参加した時刻。**この2つは syncShare が参照するので、
-// syncShare より前に宣言しておくこと**（applyAutoRoom が読込時に syncShare を呼ぶため、
-// 後ろに置くと「Cannot access 'joinedId' before initialization」で初期化ごと落ちる）。
-// joinedAt：継続時間は「自分が入ってから何秒」という差分で交換する（端末ごとの時計ズレの影響を
-// 受けないため）。時刻合わせやスリープで巻き戻らないよう performance.now() を使う。
-let joinedId = null
-let joinedAt = 0
 
 // 招待リンクは location.href ではなく部屋名から組み立てる。こうすると **入室前でも** リンクが確定し、
 // 先に配ってから入る、という使い方ができる（アドレスバーは参加するまで変えない）。
 const roomUrl = name => location.origin + location.pathname + '#' + encodeURIComponent(name)
-const pendingRoom = () => joinedId || capRoom(roomInput.value.trim() || defaultRoom())
+const pendingRoom = () => call.joinedId || capRoom(roomInput.value.trim() || defaultRoom())
 const shareUrl = () => { const n = pendingRoom(); return n ? roomUrl(n) : location.href }
 // 共有欄（リンク・コピー・QR）の表示を今の部屋名に合わせる。部屋名が無ければ隠す。
 const syncShare = () => {
@@ -659,7 +698,7 @@ const syncShare = () => {
   if (!n) return
   const url = roomUrl(n)
   $('share').textContent = url; $('share').href = url
-  $('shareLabel').textContent = joinedId ? '共有リンク：' : '招待リンク（まだ参加していません）：'
+  $('shareLabel').textContent = call.joinedId ? '共有リンク：' : '招待リンク（まだ参加していません）：'
   if (qrShown) drawQr()   // QRを開いたまま部屋名を変えたら描き直す
 }
 
@@ -795,32 +834,7 @@ const lockProfile = on => {
   profileBox.classList.toggle('locked', on)     // 「変更」トグルもグレーアウト＋操作不可に
 }
 
-let room, muted = false
-// 通話のライフサイクル状態は、ここに1つずつ集めていく（Stage 5・移行中）。狙いは
-// **「join が確保したものは leave が全部返す」を注意力ではなく構造で守る**こと。
-// seal してあるので、綴りを誤った代入は静かに無視されず TypeError になる（単独の let なら
-// ReferenceError で気づけたはずの間違いを、オブジェクト化で失わないため）。
-const call = Object.seal({
-  stream: null,       // 自分のマイク
-  usingRelay: false,  // この通話がTURN中継経由か（!!ice）＝相手にIPが見えるかの自己申告
-  wantWake: false,    // 画面を消さない状態にしたいか（復帰時に取り直すかの判断に使う）
-  wakeLock: null,     // 実際に取れた WakeLockSentinel
-  profileAction: null,  // 名前・絵文字・ミュート状態を配るデータチャネル（参加中だけ有効）
-  nudgeAction: null,    // 「音が届いていないので送り直して」を頼むデータチャネル
-  audioWatch: null,     // 音声の到着を見張るタイマー（join で開始・leave で停止）
-  peerSince: new Map(), // peerId → 接続を認識した時刻（音の到着を待ち始めた起点）
-  nudges: new Map(),    // peerId → {n: 送った回数, at: 最後に送った時刻}
-  warn: '',             // 直近のピア単位エラー（誰とも繋がっていない時だけ表示する）
-  lastRoom: null,       // ゾンビroom検出用。**退出しても捨てない**（次の参加で同一かを見る）
-  growTimer: null,      // 30秒ごとに滞在時間を貯めるタイマー
-  soundsArmed: false,   // 入室音の解禁フラグ（参加直後1.5秒は接続が連発するので鳴らさない）
-  soundsTimer: null,    // 上を解禁するタイマー
-  leaving: null         // 進行中の退出処理（room.leave() は非同期）。次の参加はこれを待つ
-})
-const mySeconds = () => joinedId ? Math.floor((performance.now() - joinedAt) / 1000) : 0
-const peers = new Set()
-const audios = new Map()   // peerId → audio要素[]（相手の退出時に個別破棄する）
-const profiles = new Map() // peerId → {name, emoji, muted, relay}（相手から届いたプロフィール）
+const mySeconds = () => call.joinedId ? Math.floor((performance.now() - call.joinedAt) / 1000) : 0
 
 // ── 音声の到着監視 ──────────────────────────────────────────────
 // 「参加者リストには相手が出ているのに、音だけ来ない」ことがある（入り直したあとに起きやすい）。
@@ -834,7 +848,7 @@ const NUDGE_MAX = 3           // これだけ頼んで駄目なら諦めて本�
 
 // 自分の現在のプロフィール送信データ（名前・絵文字・ミュート状態・成長段階・接続経路）。
 // relay は「自分が中継経由か」の自己申告（各自のブラウザだけが確実に知る）。参加者リストに経路アイコンを出す。
-const myProfilePayload = () => ({ name: profile.name, emoji: profile.emoji, muted, stage: stageOf(), relay: call.usingRelay })
+const myProfilePayload = () => ({ name: profile.name, emoji: profile.emoji, muted: call.muted, stage: stageOf(), relay: call.usingRelay })
 
 // Trystero 設定（通話部屋とロビー部屋で共用）。
 const TRYSTERO_BASE = {
@@ -881,7 +895,7 @@ const loadTrystero = () => {
 
 // 状態表示。kind は 'idle'|'busy'|'ok'|'warn'|'error' でドットの色に対応する（文字側に絵文字は置かない）
 const setState = (t, kind = 'idle') => { $('state').textContent = t; $('dot').className = 'dot' + (kind === 'idle' ? '' : ' ' + kind) }
-const setCount = () => { $('count').textContent = peers.size }
+const setCount = () => { $('count').textContent = call.peers.size }
 
 // ミュート印のマイク斜線SVG。参加者リストとロビーのチップで共用する（ボタンのミュート表示とも同じ形）。
 const MIC_OFF_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M6 11a6 6 0 0 0 12 0"/><line x1="12" y1="17" x2="12" y2="21"/><line x1="8.5" y1="21" x2="15.5" y2="21"/><line x1="4" y1="3" x2="20" y2="21"/></svg>'
@@ -914,15 +928,15 @@ const memberRow = (emoji, name, you, isMuted, stage, relay) => {
 }
 const renderMembers = () => {
   membersEl.replaceChildren(); emojiEls.clear()
-  if (!joinedId) return
+  if (!call.joinedId) return
   const add = (uid, emoji, name, you, isMuted, stage, relay) => {
     const row = memberRow(emoji, name, you, isMuted, stage, relay)
     emojiEls.set(uid, row.querySelector('.m-emoji'))
     membersEl.appendChild(row)
   }
-  add('self', profile.emoji, profile.name, true, muted, stageOf(), call.usingRelay)
+  add('self', profile.emoji, profile.name, true, call.muted, stageOf(), call.usingRelay)
   // peers（接続の事実）を軸にし、プロフィール未着の相手は仮表示にする（経路も未着なら undefined＝アイコンなし）
-  peers.forEach(id => { const p = profiles.get(id) || {}; add(id, p.emoji, p.name, false, !!p.muted, p.stage, p.relay) })
+  call.peers.forEach(id => { const p = call.profiles.get(id) || {}; add(id, p.emoji, p.name, false, !!p.muted, p.stage, p.relay) })
 }
 
 // アクティブスピーカー検出（VAD）：各ストリームの音量を測り、話している人の絵文字を跳ねさせる。
@@ -1085,14 +1099,14 @@ addEventListener('resize', () => {
 // 表示は「実際に繋がっている人数」から導く。
 // 繋がってさえいれば、幽霊ピアのハンドシェイク失敗などは表に出さない。
 const render = () => {
-  if (!joinedId) return
+  if (!call.joinedId) return
   // 圏外・Wi-Fiオフでも参加自体は成功する（マイクはローカル、ライブラリは読込済み）。
   // 何も言わないと「誰も来ない部屋」に見えて原因が分からないので、まずこれを出す。
   // navigator.onLine は「回線があるか」までしか分からないが、外れても実害のない案内なのでこれで十分。
   if (!navigator.onLine) setState('インターネットに繋がっていません', 'error')
-  else if (peers.size) setState('通話中：' + joinedId, 'ok')
+  else if (call.peers.size) setState('通話中：' + call.joinedId, 'ok')
   else if (call.warn) setState(call.warn + '（相手を探しています…）', 'warn')
-  else setState('参加中：' + joinedId + '（相手を探しています…）', 'ok')
+  else setState('参加中：' + call.joinedId + '（相手を探しています…）', 'ok')
 }
 // 通話の途中で圏外になった／戻ったときにも表示を追従させる（通話中のみ render が中身を持つ）
 addEventListener('online', render)
@@ -1102,10 +1116,10 @@ addEventListener('offline', render)
 //  AbortError      … 退出時に dropAudios が srcObject を外して再生要求を中断させただけ。
 //                    これでボタンを出すと「押しても何も起きない」誤警告になる（実際そうなっていた）。
 const play = el => el.play().catch(e => { if (e.name === 'NotAllowedError') $('unlock').style.display = 'block' })
-const allAudios = () => [...audios.values()].flat()
+const allAudios = () => [...call.audios.values()].flat()
 const dropAudios = id => {
-  (audios.get(id) || []).forEach(a => { a.srcObject = null; a.remove() })
-  audios.delete(id)
+  (call.audios.get(id) || []).forEach(a => { a.srcObject = null; a.remove() })
+  call.audios.delete(id)
 }
 
 $('unlock').onclick = () => { if (audioCtx) audioCtx.resume().catch(() => {}); allAudios().forEach(a => a.play().catch(() => {})); $('unlock').style.display = 'none' }
@@ -1117,16 +1131,16 @@ const renderAudioWarn = ids => {
   const el = $('audioWarn')
   el.hidden = !ids.length
   if (!ids.length) return
-  const who = ids.map(id => (profiles.get(id) || {}).name || '相手').join('、')
+  const who = ids.map(id => (call.profiles.get(id) || {}).name || '相手').join('、')
   el.textContent = '🔈 ' + who + ' の音がまだ届いていません。「つなぎ直す」を試してみてください'
 }
 const checkAudioArrival = () => {
-  if (!room) return
+  if (!call.room) return
   const now = Date.now()
   const stuck = []
-  peers.forEach(id => {
+  call.peers.forEach(id => {
     // 届いていれば覚えを捨てる（また切れたら最初から頼み直せるように）
-    if ((audios.get(id) || []).length) { call.nudges.delete(id); return }
+    if ((call.audios.get(id) || []).length) { call.nudges.delete(id); return }
     if (now - (call.peerSince.get(id) || now) < AUDIO_WAIT_MS) return   // まだ待つ（相手の準備中かもしれない）
     const st = call.nudges.get(id) || { n: 0, at: 0 }
     if (st.n >= NUDGE_MAX) { stuck.push(id); return }              // 頼み尽くした＝接続自体が壊れている
@@ -1218,7 +1232,7 @@ const runJoin = async () => {
   // 取れなければ通常のP2P/STUN＝直結。この値を自己申告して参加者リストに経路アイコンを出す。
   call.usingRelay = !!ice
   try {
-    room = joinRoom(trysteroConfig(ice), roomId, {
+    call.room = joinRoom(trysteroConfig(ice), roomId, {
       // ピア単位の非致命エラー（幽霊ピアへのハンドシェイク失敗など）。部屋自体は生きていて
       // 他の相手とは繋がるので、状態は上書きせず render() の判断に委ねる。
       onJoinError: d => { call.warn = d.error?.message || String(d.error || '不明'); render() }
@@ -1226,20 +1240,20 @@ const runJoin = async () => {
 
     // 前回の退出が最後まで完了していないと、joinRoom は新しい部屋を作らず
     // 同じ（死んだ）roomオブジェクトを返す。掴んだままだと永久に繋がらないので弾く。
-    if (room === call.lastRoom) {
-      room = null
+    if (call.room === call.lastRoom) {
+      call.room = null
       failJoin('前回の通話の片づけが終わっていません。ページを再読み込みしてください'); return
     }
-    call.lastRoom = room
+    call.lastRoom = call.room
 
     // プロフィール交換：接続が張れた相手に自分の名前・絵文字・ミュート状態を送る。相手も同じことを
     // するので、双方の onPeerJoin だけで両方向が揃う。名前・絵文字は通話中不変だが、muted は変わるので
     // ミュート切替時に同じペイロードを再送する（下の #mute ハンドラ）。
     // onMessage は最初のピア接続イベントより前（この同期ブロック内）に必ず代入しておく。
-    call.profileAction = room.makeAction('profile')
+    call.profileAction = call.room.makeAction('profile')
     call.profileAction.onMessage = (data, { peerId }) => {
-      const prev = profiles.get(peerId) || {}
-      profiles.set(peerId, {
+      const prev = call.profiles.get(peerId) || {}
+      call.profiles.set(peerId, {
         name: capText(data?.name ?? prev.name, 20),
         emoji: capText(data?.emoji ?? prev.emoji, 8, '🙂'),
         muted: !!data?.muted,
@@ -1253,38 +1267,38 @@ const runJoin = async () => {
 
     // 「音が届いていないので送り直して」の受け口。頼まれた側は自分のストリームを相手へ入れ直す＝
     // 相手が入り直したときに起きることと同じ。onMessage は profile と同じくピア接続より前に置く。
-    call.nudgeAction = room.makeAction('nudge')
+    call.nudgeAction = call.room.makeAction('nudge')
     call.nudgeAction.onMessage = (_data, { peerId }) => {
       // 頼まれた側から見て相手が既に切れている（＝こちらは見失っている）ことがある。その時の
       // addStream は失敗するが、頼んだ側の状況は改善しようがないので黙って諦める。
-      try { if (call.stream && room) room.addStream(call.stream, { target: peerId }) } catch {}
+      try { if (call.stream && call.room) call.room.addStream(call.stream, { target: peerId }) } catch {}
     }
 
-    room.addStream(call.stream)
-    room.onPeerStream = (stream, id) => {
+    call.room.addStream(call.stream)
+    call.room.onPeerStream = (stream, id) => {
       // 同じ相手から何度もストリームが来る（再ネゴ、そして「送り直して」を頼んだ結果）。
       // 足し続けると無音の <audio> と古い MediaStream への参照が溜まるので、1人につき1本に保つ。
-      const cur = audios.get(id) || []
+      const cur = call.audios.get(id) || []
       if (cur.some(a => a.srcObject && a.srcObject.id === stream.id)) return   // 同じものの再到着
       dropAudios(id)            // 別のストリームに入れ替わった＝古い方は用済み
       const a = document.createElement('audio')
       a.srcObject = stream; a.autoplay = true; a.playsInline = true
       document.body.appendChild(a)
-      audios.set(id, [a])
+      call.audios.set(id, [a])
       addAnalyser(id, stream)   // 相手の音量を測って絵文字を跳ねさせる（中で古い方を外している）
       play(a)
     }
-    room.onPeerJoin = id => { peers.add(id); call.peerSince.set(id, Date.now()); room.addStream(call.stream, { target: id }); sendProfile(id); call.warn = ''; setCount(); render(); renderMembers(); soundJoin() }
-    room.onPeerLeave = id => { peers.delete(id); profiles.delete(id); call.peerSince.delete(id); call.nudges.delete(id); dropAudios(id); removeAnalyser(id); setCount(); render(); renderMembers(); renderAudioWarn([]); soundLeave() }
+    call.room.onPeerJoin = id => { call.peers.add(id); call.peerSince.set(id, Date.now()); call.room.addStream(call.stream, { target: id }); sendProfile(id); call.warn = ''; setCount(); render(); renderMembers(); soundJoin() }
+    call.room.onPeerLeave = id => { call.peers.delete(id); call.profiles.delete(id); call.peerSince.delete(id); call.nudges.delete(id); dropAudios(id); removeAnalyser(id); setCount(); render(); renderMembers(); renderAudioWarn([]); soundLeave() }
   } catch (e) {
     // 部屋は掴めたが後続で失敗した場合、掴んだまま抜けると次の参加がゾンビ検出に引っかかって
     // 「再読み込みしてください」になる。ここで手放しておけば、もう一度押すだけでやり直せる。
-    if (room) { const dead = room; room = null; call.leaving = dead.leave().catch(() => {}).finally(() => { call.leaving = null }) }
+    if (call.room) { const dead = call.room; call.room = null; call.leaving = dead.leave().catch(() => {}).finally(() => { call.leaving = null }) }
     failJoin('つながりませんでした: ' + (e.message || e)); return
   }
 
   call.wantWake = true; wake()
-  joinedId = roomId; joinedAt = performance.now(); call.warn = ''; render(); renderMembers()
+  call.joinedId = roomId; call.joinedAt = performance.now(); call.warn = ''; render(); renderMembers()
   location.hash = encodeURIComponent(roomId)   // 参加が成立してから URL に焼き付ける（失敗時は元のまま）
   // 入室音のガード：参加直後は「既にいる人ぶん」の onPeerJoin が連発するので、1.5秒は鳴らさない。
   // 前回のタイマーが生きていると、入り直した直後にそれが発火して早く解禁されてしまう（＝入室音が
@@ -1292,7 +1306,7 @@ const runJoin = async () => {
   call.soundsArmed = false
   clearTimeout(call.soundsTimer)
   call.soundsTimer = setTimeout(() => { call.soundsArmed = true; call.soundsTimer = null }, 1500)
-  syncShare()   // joinedId が入ったのでラベルを「共有リンク」に切り替える（冒頭の呼び出しは未参加のまま）
+  syncShare()   // call.joinedId が入ったのでラベルを「共有リンク」に切り替える（冒頭の呼び出しは未参加のまま）
   addAnalyser('self', call.stream)   // 自分のマイク音量でも絵文字を跳ねさせる（ミュート中は無反応）
   startEq()                       // 点字EQの飾りを開始（音量で下から伸びる）
   stopAudioWatch(); call.audioWatch = setInterval(checkAudioArrival, 2000)   // 音が来ない相手に送り直しを頼む監視を開始
@@ -1319,13 +1333,13 @@ $('join').onclick = joinCall
 // ミュートボタン。アイコン＝今の状態（マイクに斜線が出る／消える）、文字＝押すと起きること。
 // DOMは作り直さず class と textContent だけ変える（innerHTML差し替えの再描画ちらつきを防ぐ）。
 const renderMute = () => {
-  $('mute').classList.toggle('muted', muted)
-  $('mute').querySelector('.lbl').textContent = muted ? 'ミュート解除' : 'ミュート'
+  $('mute').classList.toggle('muted', call.muted)
+  $('mute').querySelector('.lbl').textContent = call.muted ? 'ミュート解除' : 'ミュート'
 }
 renderMute()   // 初期表示
 
 const toggleMute = () => {
-  muted = !muted; call.stream.getAudioTracks().forEach(t => t.enabled = !muted)
+  call.muted = !call.muted; call.stream.getAudioTracks().forEach(t => t.enabled = !call.muted)
   renderMute()
   if (call.profileAction) call.profileAction.send(myProfilePayload()).catch(() => {})  // 全員へミュート状態を配信
   sendHeartbeat()  // ロビーの自分にもミュート状態を反映
@@ -1351,11 +1365,11 @@ const resetJoinedUI = () => {
 // ＝もともと目指していた「リロードで直るのと同じ状態」に、これで実際になる。
 let retrying = false
 $('retry').onclick = async () => {
-  if (retrying || !joinedId) return
+  if (retrying || !call.joinedId) return
   retrying = true
   $('retry').disabled = true
   setState('つなぎ直しています…', 'busy')
-  try { sessionStorage.setItem(REJOIN_KEY, JSON.stringify({ room: joinedId, muted, at: Date.now() })) } catch {}
+  try { sessionStorage.setItem(REJOIN_KEY, JSON.stringify({ room: call.joinedId, muted: call.muted, at: Date.now() })) } catch {}
   // 先に退出を伝えてからリロードする。相手がこちらの離脱を早く知るほど、戻ったときに
   // すんなり繋ぎ直してもらえる。ただし完了を待ち続けない（届かなくてもリロードは進める）。
   leaveCall()
@@ -1364,22 +1378,27 @@ $('retry').onclick = async () => {
 }
 
 // 退出：join が確保したもの（マイク・room・audio要素・解析・画面ロック・タイマー類）を全て解放する。
-// **この対称性だけが再参加の破綻を防いでいる**ので、join に足したら必ずここにも足すこと。
+// **「① 副作用 → ② resetCall() → ③ 画面 → ④ leaving」の順を崩さないこと。**
+// ① は値を戻すだけでは代替できないもの（止める・返す・DOMから消す）で、必ず reset より前。
+// ② で call の値が丸ごとテンプレートに戻るので、**フィールドを足しても戻し忘れが起きない**
+// （足す先は CALL_INIT だけ。ここに追記が要るのは「止める」処理があるときだけ）。
 const leaveCall = () => {
-  const leftRoom = room; room = null
-  if (call.stream) { call.stream.getTracks().forEach(t => t.stop()); call.stream = null }
-  ;[...audios.keys()].forEach(dropAudios)
-  call.wantWake = false; if (call.wakeLock) { call.wakeLock.release().catch(() => {}); call.wakeLock = null }
-  peers.clear(); profiles.clear(); setCount(); call.profileAction = null
-  stopAudioWatch(); call.nudgeAction = null   // 音声到着の監視を停止＋待ち時間と催促回数の記憶を捨てる
+  // ① 副作用（reset では代替できないもの）
+  const leftRoom = call.room                                   // ④で使うので reset の前に控える
+  if (call.stream) call.stream.getTracks().forEach(t => t.stop())
+  ;[...call.audios.keys()].forEach(dropAudios)                 // **reset で Map ごと捨てる前に** DOM を消す
+  if (call.wakeLock) call.wakeLock.release().catch(() => {})
+  if (call.growTimer) clearInterval(call.growTimer)            // 成長の時間加算を停止
+  clearTimeout(call.soundsTimer)                               // 入室音の解禁タイマーも捨てる
+  stopAudioWatch()   // 音声到着の監視を停止＋待ち時間と催促回数の記憶を捨てる
   stopVad(); resetTalk(); stopEq()   // 解析ループ停止＋AudioContext破棄（join が確保したものを全て解放）
   stopHeartbeat()  // ロビーへ「退出した」を通知＋定期発信を停止（ロビー部屋自体は閲覧用に残す）
-  if (call.growTimer) { clearInterval(call.growTimer); call.growTimer = null }   // 成長の時間加算を停止
-  renderGrow()
-  joinedId = null; call.warn = ''; call.usingRelay = false
-  call.soundsArmed = false; clearTimeout(call.soundsTimer); call.soundsTimer = null   // 入室音の解禁タイマーも捨てる
-  renderMembers(); renderLobby()
-  muted = false; renderMute()
+
+  // ② 値を初期状態へ。lastRoom（ゾンビroom検出）と leaving は据え置かれる
+  resetCall()
+
+  // ③ 画面を「未参加」に戻す
+  setCount(); renderGrow(); renderMembers(); renderLobby(); renderMute()
   resetQr()   // QRトグルを畳んでおく（次の参加で古いリンクを残さない）
   syncShare() // 「共有リンク」→「招待リンク（まだ参加していません）」に戻す
   setState('退出しました', 'idle')
@@ -1387,7 +1406,8 @@ const leaveCall = () => {
   // ボタンが入れ替わってちらつくのを避ける（join に失敗したときは retry 側が責任を持って戻す）。
   if (!retrying) resetJoinedUI()
 
-  // UIは即座に戻すが、実際の退出は非同期に続く。次の参加はこれの完了を待つ（⓪参照）。
+  // ④ UIは即座に戻すが、実際の退出は非同期に続く。次の参加はこれの完了を待つ（⓪参照）。
+  // leaving はテンプレート外なので **reset の後に**入れる（先に入れると消される）。
   // 失敗しても再参加を塞がないよう握りつぶす（掴んだ場合は上のゾンビ検出が拾う）。
   if (leftRoom) call.leaving = leftRoom.leave().catch(() => {}).finally(() => { call.leaving = null })
 }
@@ -1397,7 +1417,7 @@ $('leave').onclick = leaveCall
 // マイク許可が要求される場面なので、失敗しても普通の参加エラーとして見えればよい（部屋名は残る）。
 if (rejoin) {
   roomInput.value = capRoom(rejoin.room); syncRoomCount(); syncShare()
-  joinCall().then(() => { if (rejoin.muted && !muted && joinedId) toggleMute() })
+  joinCall().then(() => { if (rejoin.muted && !call.muted && call.joinedId) toggleMute() })
 }
 
 // ───────── ロビー（通話中の部屋の死活監視・一覧） ─────────
@@ -1411,8 +1431,8 @@ const STALE_MS = 15000       // これだけ無音なら「落ちた」とみな
 let lobbyRoom = null, lobbyPresence = null, heartbeatTimer = null
 const presences = new Map()  // 発信者peerId → {room, name, emoji, muted, stage, ts}
 
-const heartbeatPayload = () => joinedId
-  ? { room: joinedId, name: profile.name, emoji: profile.emoji, muted, stage: stageOf(), elapsed: mySeconds(), talk: talkLevel }
+const heartbeatPayload = () => call.joinedId
+  ? { room: call.joinedId, name: profile.name, emoji: profile.emoji, muted: call.muted, stage: stageOf(), elapsed: mySeconds(), talk: talkLevel }
   : { room: null }
 // ───────── 在室の Nostr 直publish（段階A：既存ロビーに併走で足すだけ） ─────────
 // 外部（ブログのバナー等）が「この部屋が今ライブか」を、メッシュに入らず読み取り専用で知れるように、
@@ -1428,14 +1448,14 @@ const roomHash = async room => {
   return [...new Uint8Array(buf)].slice(0, 8).map(b => b.toString(16).padStart(2, '0')).join('')   // 先頭64bit
 }
 const publishPresence = async () => {
-  if (!joinedId) return
-  const room = joinedId
+  if (!call.joinedId) return
+  const room = call.joinedId
   try {
     const nt = await loadNostr()
     nostrPool ??= new nt.SimplePool()
     nostrKey ??= nt.generateSecretKey()
     const d = await roomHash(room)
-    if (room !== joinedId) return   // 非同期の間に退出/部屋移動していたら中止
+    if (room !== call.joinedId) return   // 非同期の間に退出/部屋移動していたら中止
     const evt = nt.finalizeEvent({
       kind: NOSTR_KIND, created_at: Math.floor(Date.now() / 1000), tags: [['d', d]],
       // **公開リレーに載せるのは、読み取り側が実際に使うものだけ**にする（今は絵文字だけ）。
@@ -1455,12 +1475,12 @@ const publishPresence = async () => {
 // 送信のたびに描き直して自分の部屋の表示も更新する（他人の部屋は相手のハートビートで更新される）。
 const sendHeartbeat = () => {
   if (lobbyPresence) { lobbyPresence.send(heartbeatPayload()).catch(() => {}); renderLobby() }
-  publishPresence()   // Nostr直publishも併走（joinedId が無ければ中で何もしない）
+  publishPresence()   // Nostr直publishも併走（call.joinedId が無ければ中で何もしない）
 }
 const startHeartbeat = () => { sendHeartbeat(); if (!heartbeatTimer) heartbeatTimer = setInterval(sendHeartbeat, HEARTBEAT_MS) }
 const stopHeartbeat = () => {
   if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null }
-  if (lobbyPresence) lobbyPresence.send({ room: null }).catch(() => {})  // 「退出した」を明示（joinedId のクリア順に依存しない）
+  if (lobbyPresence) lobbyPresence.send({ room: null }).catch(() => {})  // 「退出した」を明示（call.joinedId のクリア順に依存しない）
 }
 
 // 部屋の継続時間。その部屋にいる全員のうち「一番長くいる人の滞在時間」＝部屋が始まってからの時間。
@@ -1527,7 +1547,7 @@ const renderLobby = () => {
     a.push(p)
   }
   presences.forEach(v => push(v.room, { name: v.name, emoji: v.emoji, muted: v.muted, stage: v.stage, elapsed: v.elapsed, ts: v.ts, talk: v.talk }))
-  if (joinedId) push(joinedId, { name: profile.name, emoji: profile.emoji, muted, stage: stageOf(), elapsed: mySeconds(), ts: Date.now(), talk: talkLevel })
+  if (call.joinedId) push(call.joinedId, { name: profile.name, emoji: profile.emoji, muted: call.muted, stage: stageOf(), elapsed: mySeconds(), ts: Date.now(), talk: talkLevel })
   list.replaceChildren()
   const names = [...byRoom.keys()].sort()
   // ロビーに入った直後はまだ誰も見つけていないだけなので「ありません」と断定しない。
@@ -1541,7 +1561,7 @@ const renderLobby = () => {
   names.forEach(r => {
     if (seenRooms.has(r)) return
     seenRooms.add(r)
-    if (!seeded || r === joinedId) return
+    if (!seeded || r === call.joinedId) return
     // まとめて現れたときに鳴りっぱなしにしない。取りこぼしても「新しい部屋がある」ことは
     // 一覧を見れば分かるので、間隔を空けるほうが実害が小さい。
     if (Date.now() - lastRoomSound < ROOM_SOUND_GAP_MS) return
@@ -1554,7 +1574,7 @@ const renderLobby = () => {
     // 活発さ＝その部屋の誰かが話していれば、その最大値。内側のリングの濃さで示す
     const act = Math.max(0, ...people.map(p => p.talk || 0))
     const btn = document.createElement('button')
-    btn.className = 'room' + (room === joinedId ? ' here' : '') + (act ? ' act' + act : '')
+    btn.className = 'room' + (room === call.joinedId ? ' here' : '') + (act ? ' act' + act : '')
     const top = document.createElement('div'); top.className = 'room-top'
     const nm = document.createElement('span'); nm.className = 'room-name'; nm.textContent = '🏠 ' + room
     const ct = document.createElement('span'); ct.className = 'room-count'; ct.textContent = people.length + '人'
@@ -1593,9 +1613,9 @@ const renderLobby = () => {
 // フォーカスは当てない（スマホでキーボードが出るのを避ける）。通話中に別部屋をタップしたら
 // 確認のうえ今の部屋を退出してから入り直す（自室のタップは無視）。
 const selectRoom = room => {
-  if (room === joinedId) return
-  if (joinedId) {
-    if (!confirm('参加中の部屋「' + joinedId + '」を退出して「' + room + '」に移りますか？')) return
+  if (room === call.joinedId) return
+  if (call.joinedId) {
+    if (!confirm('参加中の部屋「' + call.joinedId + '」を退出して「' + room + '」に移りますか？')) return
     leaveCall()   // 今の部屋を退出（非同期の後片付けは leaving が保持し、次の参加で待たれる）
   } else {
     if (!confirm('「' + room + '」に参加しますか？')) return   // 未参加時のミスタップ防止
@@ -1683,7 +1703,7 @@ const openLobby = async (again, status, soft = false) => {
       renderLobby()
     }
     // 新しい閲覧者が来たら、自分が通話中なら即座に在室を送って一覧を埋める
-    lobbyRoom.onPeerJoin = peerId => { lobbyPeers.add(peerId); renderViewers(); if (joinedId) sendHeartbeat() }
+    lobbyRoom.onPeerJoin = peerId => { lobbyPeers.add(peerId); renderViewers(); if (call.joinedId) sendHeartbeat() }
     lobbyRoom.onPeerLeave = peerId => { lobbyPeers.delete(peerId); renderViewers(); presences.delete(peerId); renderLobby() }
     // 取りこぼし対策：一定時間更新の無い相手を掃除
     lobbySweep = setInterval(() => {
@@ -1692,7 +1712,7 @@ const openLobby = async (again, status, soft = false) => {
       if (changed) renderLobby()
       renderViewers()   // 出入りが無いまま grace が明けても人数が古いまま残らないように
     }, HEARTBEAT_MS)
-    if (joinedId) sendHeartbeat()   // 通話中に入り直したら、自分の在室をすぐ出し直す
+    if (call.joinedId) sendHeartbeat()   // 通話中に入り直したら、自分の在室をすぐ出し直す
     renderLobby(); renderViewers()
     setTimeout(() => { renderLobby(); renderViewers() }, DISCOVER_MS + 200)   // 探索中の表示を切り替えるため
   } catch {
