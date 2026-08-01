@@ -13,6 +13,27 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!-- CSP：どこから読み、どこへ送ってよいかをブラウザに宣言する。GitHub Pages は HTTP ヘッダを
+     足せないので <meta> で入れる（その制約で frame-ancestors は使えない＝クリックジャッキング
+     対策は打てない）。単一 index.html にインラインの <style>/<script> があるため 'unsafe-inline'
+     は外せない（ハッシュ列挙にすると編集のたび再計算＝ビルド無しの設計と衝突する）。
+     ★守りの主眼は「知らない宛先へ送らせない」こと。受信データは capText を通して textContent で
+     入れており注入口はほぼ無いので、これは念のための層＋「ここ以外へ送っていない」の証明。
+     ★WebRTC は CSP の管轄外。音声の宛先（Cloudflare TURN／直結時は相手の生IP）はここに書けない
+     ＝将来 P2P モードを足してもこの行は変わらない。
+     ★列挙した wss: は TRYSTERO_BASE.relayConfig.urls と**同じもの**。Trystero を上げたときに
+     設定キー名が変わると黙って既定リレーへ落ちるが、それはここでブロックされて全滅する
+     （静かな設定ドリフトが派手な失敗に変わる）。上げたら必ず2台で疎通確認すること。 -->
+<meta http-equiv="Content-Security-Policy" content="
+  default-src 'none';
+  script-src 'self' 'unsafe-inline' https://esm.sh https://static.cloudflareinsights.com;
+  style-src 'self' 'unsafe-inline';
+  img-src 'self' data:;
+  connect-src 'self' https://esm.sh https://pot-turn.itsuma-kuramoto.workers.dev https://cloudflareinsights.com wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://relay.nostr.band wss://offchain.pub;
+  manifest-src 'self';
+  base-uri 'self';
+  form-action 'none';
+  object-src 'none'">
 <title>ぽっと通話｜po call</title>
 <!-- OGP（SNSでリンクを貼ったときのカード）。画像は絶対URL必須・部屋名はハッシュなので全部屋共通 -->
 <meta property="og:type" content="website">
@@ -465,7 +486,8 @@
     <ul>
       <li>通話は<b>ブラウザどうしを直接つなぐ仕組み（WebRTC）</b>です。運営はサーバを持たず（サーバレス）、通話の中身が運営の手元を通ることはありません</li>
       <li>音声は<b>暗号化</b>してやり取り（サーバに録音・保存されません）。ふだんは Cloudflare の中継を通すので、<b>相手にあなたの IP アドレスは見えません</b>（中継先も暗号化された中身は聞けません）</li>
-      <li>部屋名を知っている人は誰でも入れます。ロビーには<b>部屋名・参加者・どのくらい続いているか・話しているかどうか</b>が表示されます（＝内緒の部屋ではありません）</li>
+      <li>中継を通せなかったときは、そのまま<b>相手と直接つなぎます</b>。通話はふつうに使えますが、<b>そのときだけ相手にあなたの IP アドレスが見えます</b>。いまどちらかは、参加者リストの右端の印（<b>☁️＝中継／↔＝直接</b>）で一人ずつ分かります</li>
+      <li><b>非公開の部屋は作れません。</b>通話中の部屋は<b>かならずロビーに出ます</b>（部屋名・参加者・どのくらい続いているか・話しているかどうか）。隠す設定はどこにもない、というつくりです</li>
       <li>通話中は「その部屋が今ライブか」を外部（ブログのバナー等）が表示できるよう、在室情報を公開Nostrリレーに送っています。<b>部屋名そのものは送らず、伏せた値（ハッシュ）</b>にしているので、部屋名を知らない人に一覧で覗かれることはありません（運営サーバは介しません）</li>
       <li>アクセス数の測定に Cloudflare Web Analytics を使用（Cookie不使用・個人は特定しません）</li>
     </ul>
@@ -1164,6 +1186,19 @@ addEventListener('resize', () => {
   if (!eqTimer) $('eq').textContent = EQ_GLYPH[1].repeat(eqBars)
 })
 
+// Trystero のピア単位エラーは英語で、しかも**原因を決めつけている**。
+// 「check that your TURN server URLs and credentials are reachable by both peers」は
+// **TURN が正常でも出る**（リレーに居残った幽霊ピアを相手にしただけでも同じ文言になる）。
+// そのまま出すと、利用者は自分では手の出しようがない TURN サーバを疑うことになるので、
+// 「何が起きたか」だけに翻訳して、対処は下の render が状況を見て添える。
+const JOIN_ERR_MS = 20000   // これだけ誰とも繋がらないままなら「つなぎ直す」を勧める
+const joinErrText = raw => {
+  const s = String(raw || '')
+  if (/could not connect|TURN|handshake|timed out/i.test(s)) return '相手とつながれませんでした'
+  return 'つなぐ途中でエラーが出ました'
+}
+const aloneLong = () => call.joinedAt && performance.now() - call.joinedAt > JOIN_ERR_MS
+
 // 表示は「実際に繋がっている人数」から導く。
 // 繋がってさえいれば、幽霊ピアのハンドシェイク失敗などは表に出さない。
 const render = () => {
@@ -1173,7 +1208,11 @@ const render = () => {
   // navigator.onLine は「回線があるか」までしか分からないが、外れても実害のない案内なのでこれで十分。
   if (!navigator.onLine) setState('インターネットに繋がっていません', 'error')
   else if (call.peers.size) setState('通話中：' + call.joinedId, 'ok')
-  else if (call.warn) setState(call.warn + '（相手を探しています…）', 'warn')
+  // 誰とも繋がらないままエラーが出ている。**しばらく続いたら「つなぎ直す」へ誘導する**。
+  // つなぎ直す＝リロードなので、ピアID（selfId）も TURN 資格情報も取り直される＝この手の
+  // 詰まり（居残った幽霊ピア／期限切れの資格情報）に実際に効く、唯一こちらから打てる手。
+  // ただし即座には言わない。相手の到着待ちで一時的にエラーが出ることは普通にあるため。
+  else if (call.warn) setState(call.warn + (aloneLong() ? '（「つなぎ直す」を試してみてください）' : '（相手を探しています…）'), 'warn')
   else setState('参加中：' + call.joinedId + '（相手を探しています…）', 'ok')
 }
 // 通話の途中で圏外になった／戻ったときにも表示を追従させる（通話中のみ render が中身を持つ）
@@ -1204,6 +1243,10 @@ const renderAudioWarn = ids => {
 }
 const checkAudioArrival = () => {
   if (!call.room) return
+  // 誰とも繋がれていない間だけ、状態表示を描き直す。aloneLong() は時間で答えが変わるので、
+  // 何かの出来事を待っていると「つなぎ直す」の案内がいつまでも出ない（イベントが来ないため）。
+  // 繋がった後は render がイベントで呼ばれるので、ここで回す必要はない。
+  if (!call.peers.size) render()
   const now = Date.now()
   const stuck = []
   call.peers.forEach(id => {
@@ -1303,7 +1346,7 @@ const runJoin = async () => {
     call.room = joinRoom(trysteroConfig(ice), roomId, {
       // ピア単位の非致命エラー（幽霊ピアへのハンドシェイク失敗など）。部屋自体は生きていて
       // 他の相手とは繋がるので、状態は上書きせず render() の判断に委ねる。
-      onJoinError: d => { call.warn = d.error?.message || String(d.error || '不明'); render() }
+      onJoinError: d => { call.warn = joinErrText(d.error?.message || d.error); render() }
     })
 
     // 前回の退出が最後まで完了していないと、joinRoom は新しい部屋を作らず
@@ -1501,7 +1544,10 @@ if (rejoin) {
 // ページ生存中ずっと残す（通話部屋とは別。leave しない）。
 const LOBBY_ROOM = '__lobby__'
 const HEARTBEAT_MS = 5000    // 在室ハートビート間隔
-const STALE_MS = 15000       // これだけ無音なら「落ちた」とみなす
+// これだけ無音なら「落ちた」とみなす。ハートビートは5秒ごとなので6回ぶんの余裕。
+// **短くしすぎない**：一覧の役目は「秘密の部屋が作れない」ことを示すことなので、まだ通話中の
+// 部屋が取りこぼしで消えるほうが、落ちた人が少し残るより悪い。誤りは残る側に倒しておく。
+const STALE_MS = 30000
 let lobbyRoom = null, lobbyPresence = null, heartbeatTimer = null
 const presences = new Map()  // 発信者peerId → {room, name, emoji, muted, stage, ts}
 
