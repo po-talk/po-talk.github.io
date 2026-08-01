@@ -605,7 +605,9 @@ const CALL_INIT = () => ({
   growTimer: null,      // 30秒ごとに滞在時間を貯めるタイマー
   soundsArmed: false,   // 入室音の解禁フラグ（参加直後1.5秒は接続が連発するので鳴らさない）
   soundsTimer: null,    // 上を解禁するタイマー
-  legendTimer: null     // 経路アイコンの凡例を畳むタイマー（参加直後だけ開いて出すため）
+  legendTimer: null,    // 経路アイコンの凡例を畳むタイマー（参加直後だけ開いて出すため）
+  iceServers: null,     // いま通話に渡してある iceServers 配列。**中身を入れ替えて使う**（refreshIce）
+  iceTimer: null        // 上を定期的に入れ替えるタイマー
 })
 // **テンプレートに入れない2つ**。どちらも「退出しても引き継ぐ」ものなので、reset で戻すと壊れる。
 const call = Object.seal({
@@ -1202,6 +1204,28 @@ addEventListener('resize', () => {
 // **TURN が正常でも出る**（リレーに居残った幽霊ピアを相手にしただけでも同じ文言になる）。
 // そのまま出すと、利用者は自分では手の出しようがない TURN サーバを疑うことになるので、
 // 「何が起きたか」だけに翻訳して、対処は下の render が状況を見て添える。
+// ── 通話中の TURN 資格情報の入れ替え ─────────────────────────────
+// 資格情報は短命で、**取得に失敗した場合（STUN へフォールバック＝繋がるがIPは見える）とは別に、
+// 「取れた後に期限切れになる」**という壊れ方がある。その状態で新しい相手が来ると、relay-only の
+// まま TURN の割り当てが拒否されて**候補がひとつも作れず、まったく繋がらない**。しかも静かに失敗
+// するので誰も気づけない（ロビーが時間とともに劣化していた原因と同じ筋・HANDOFF 参照）。
+//
+// **直せる根拠**（Trystero 0.25.2 のソースで確認。上げたら必ず確かめ直すこと）：
+//   ・joinRoom に渡した設定オブジェクトを**参照のまま**保持している（deep clone していない）
+//   ・ピア接続はそのつど `new RTCPeerConnection({iceServers: 既定, ...rtcConfig})` で作られる
+//   → **同じ配列の中身を入れ替えれば、以降に繋がる相手には新しい資格情報が使われる**。
+// 既に確立している接続は触らない（TURN の割り当てはブラウザが自動で延長するので影響を受けない）。
+const ICE_REFRESH_MS = 5 * 60 * 1000   // loadIce の10分キャッシュより短く＝常に10分以内のものを持つ
+const refreshIce = async () => {
+  const live = call.iceServers
+  if (!live) return                     // TURN を取れずに参加した回（STUN のみ）は入れ替えるものが無い
+  let fresh
+  try { fresh = await loadIce() } catch { return }
+  // 非同期で待っている間に退出・入り直しをしていることがある。**掴んだときと同じ配列**にだけ書く
+  if (!fresh || call.iceServers !== live) return
+  live.splice(0, live.length, ...fresh)  // ★参照を保ったまま中身だけ差し替える（代入では効かない）
+}
+
 const JOIN_ERR_MS = 20000   // これだけ誰とも繋がらないままなら「つなぎ直す」を勧める
 const joinErrText = raw => {
   const s = String(raw || '')
@@ -1353,8 +1377,12 @@ const runJoin = async () => {
   // 経路を確定：ice が取れた時だけ trysteroConfig が relay-only を付ける（＝実際に中継経由）。
   // 取れなければ通常のP2P/STUN＝直結。この値を自己申告して参加者リストに経路アイコンを出す。
   call.usingRelay = !!ice
+  // 設定オブジェクトを控えておく。**Trystero はピア接続を作るたびに、この rtcConfig.iceServers を
+  // 読み直す**ので、配列の中身を入れ替えれば以降の相手に新しい資格情報が渡る（refreshIce 参照）。
+  const trysteroCfg = trysteroConfig(ice)
+  call.iceServers = trysteroCfg.rtcConfig?.iceServers || null
   try {
-    call.room = joinRoom(trysteroConfig(ice), roomId, {
+    call.room = joinRoom(trysteroCfg, roomId, {
       // ピア単位の非致命エラー（幽霊ピアへのハンドシェイク失敗など）。部屋自体は生きていて
       // 他の相手とは繋がるので、状態は上書きせず render() の判断に委ねる。
       onJoinError: d => { call.warn = joinErrText(d.error?.message || d.error); render() }
@@ -1437,6 +1465,8 @@ const runJoin = async () => {
   addAnalyser('self', call.stream)   // 自分のマイク音量でも絵文字を跳ねさせる（ミュート中は無反応）
   startEq()                       // 点字EQの飾りを開始（音量で下から伸びる）
   stopAudioWatch(); call.audioWatch = setInterval(checkAudioArrival, 2000)   // 音が来ない相手に送り直しを頼む監視を開始
+  clearInterval(call.iceTimer)   // 長い通話の途中で資格情報が切れないよう、定期的に入れ替える
+  call.iceTimer = setInterval(refreshIce, ICE_REFRESH_MS)
   startHeartbeat()                // ロビーへ自分の在室（部屋名・名前・絵文字）を定期発信
   renderLobby()                   // 自分の部屋を一覧に即反映（here ハイライト）
   // 成長：参加回数と「使った日数」を加算し、通話中は30秒ごとに時間を貯める
@@ -1518,6 +1548,7 @@ const leaveCall = () => {
   if (call.growTimer) clearInterval(call.growTimer)            // 成長の時間加算を停止
   clearTimeout(call.soundsTimer)                               // 入室音の解禁タイマーも捨てる
   clearTimeout(call.legendTimer)                               // 凡例を畳むタイマーも捨てる
+  clearInterval(call.iceTimer)                                 // 資格情報の入れ替えも止める
   stopAudioWatch()   // 音声到着の監視を停止＋待ち時間と催促回数の記憶を捨てる
   stopVad(); resetTalk(); stopEq()   // 解析ループ停止＋AudioContext破棄（join が確保したものを全て解放）
   stopHeartbeat()  // ロビーへ「退出した」を通知＋定期発信を停止（ロビー部屋自体は閲覧用に残す）
