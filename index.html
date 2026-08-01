@@ -600,7 +600,8 @@ const CALL_INIT = () => ({
   nudgeAction: null,    // 「音が届いていないので送り直して」を頼むデータチャネル
   audioWatch: null,     // 音声の到着を見張るタイマー（join で開始・leave で停止）
   peerSince: new Map(), // peerId → 接続を認識した時刻（音の到着を待ち始めた起点）
-  nudges: new Map(),    // peerId → {n: 送った回数, at: 最後に送った時刻}
+  nudges: new Map(),    // peerId → {n: 送った回数, at: 最後に送った時刻}（頼む側）
+  nudgeSeen: new Map(), // peerId → 最後に応じた時刻（頼まれる側。連打への自衛）
   warn: '',             // 直近のピア単位エラー（誰とも繋がっていない時だけ表示する）
   growTimer: null,      // 30秒ごとに滞在時間を貯めるタイマー
   soundsArmed: false,   // 入室音の解禁フラグ（参加直後1.5秒は接続が連発するので鳴らさない）
@@ -908,6 +909,12 @@ const mySeconds = () => call.joinedId ? Math.floor((performance.now() - call.joi
 const AUDIO_WAIT_MS = 10000   // これだけ待って音が来なければ送り直しを頼む（相手の準備が遅いだけの場合を避ける）
 const NUDGE_EVERY_MS = 6000   // 頼む間隔
 const NUDGE_MAX = 3           // これだけ頼んで駄目なら諦めて本人に知らせる（接続自体が壊れている場合）
+// **応じる側の下限間隔**。頼む側は NUDGE_EVERY_MS で自制しているが、それは行儀のよいクライアントの
+// 話でしかない。改造版が nudge を連打すると、こちらは言われるまま addStream をやり直す＝再ネゴを
+// 好きなだけ強制される（相手1人でCPUと帯域を使わせられる）。**受け口にも自前の制限を置く。**
+// 頼む側の間隔より短くしておくこと。同じ値にすると、わずかなタイミングのずれで正当な依頼を
+// 落としてしまい、相手の3回の機会を1つ無駄にする。
+const NUDGE_ACCEPT_MS = Math.max(1000, NUDGE_EVERY_MS - 2000)
 
 // 自分の現在のプロフィール送信データ（名前・絵文字・ミュート状態・成長段階・接続経路）。
 // relay は「自分が中継経由か」の自己申告（各自のブラウザだけが確実に知る）。参加者リストに経路アイコンを出す。
@@ -1419,6 +1426,10 @@ const runJoin = async () => {
     // 相手が入り直したときに起きることと同じ。onMessage は profile と同じくピア接続より前に置く。
     call.nudgeAction = call.room.makeAction('nudge')
     call.nudgeAction.onMessage = (_data, { peerId }) => {
+      // 連打への自衛。同じ相手には NUDGE_ACCEPT_MS に1回しか応じない（上の定義参照）。
+      const now = Date.now()
+      if (now - (call.nudgeSeen.get(peerId) || 0) < NUDGE_ACCEPT_MS) return
+      call.nudgeSeen.set(peerId, now)
       // 頼まれた側から見て相手が既に切れている（＝こちらは見失っている）ことがある。その時の
       // addStream は失敗するが、頼んだ側の状況は改善しようがないので黙って諦める。
       try { if (call.stream && call.room) call.room.addStream(call.stream, { target: peerId }) } catch {}
@@ -1439,7 +1450,7 @@ const runJoin = async () => {
       play(a)
     }
     call.room.onPeerJoin = id => { call.peers.add(id); call.peerSince.set(id, Date.now()); call.room.addStream(call.stream, { target: id }); sendProfile(id); call.warn = ''; setCount(); render(); renderMembers(); soundJoin() }
-    call.room.onPeerLeave = id => { call.peers.delete(id); call.profiles.delete(id); call.peerSince.delete(id); call.nudges.delete(id); dropAudios(id); removeAnalyser(id); setCount(); render(); renderMembers(); renderAudioWarn([]); soundLeave() }
+    call.room.onPeerLeave = id => { call.peers.delete(id); call.profiles.delete(id); call.peerSince.delete(id); call.nudges.delete(id); call.nudgeSeen.delete(id); dropAudios(id); removeAnalyser(id); setCount(); render(); renderMembers(); renderAudioWarn([]); soundLeave() }
   } catch (e) {
     // 部屋は掴めたが後続で失敗した場合、掴んだまま抜けると次の参加がゾンビ検出に引っかかって
     // 「再読み込みしてください」になる。ここで手放しておけば、もう一度押すだけでやり直せる。
