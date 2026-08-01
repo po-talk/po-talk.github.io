@@ -234,6 +234,27 @@
   .m-conn svg{ width:16px; height:16px }
   .m-conn.relay{ color:#f6821f }
   .m-conn.direct{ color:#00e5cc }
+  /* 経路アイコンの凡例（通話中だけ）。**主語は常に「その行の人」**にしてある＝自分の行にも
+     相手の行にも同じ文が当たり、読み手が立場を切り替えずに済む（逆転させない言い方を選ぶ）。
+     参加直後だけ開いて出し、数秒で畳む＝アイコンと言葉の対応（☁️中継／↔直接）は常に残しつつ、
+     2行を出しっぱなしにしない。畳んだ後もタップでいつでも開き直せる。 */
+  .conn-legend{ margin:8px 2px 0; font-size:12px; color:#6f7f96; line-height:1.9 }
+  .conn-legend > summary{ list-style:none; cursor:pointer }
+  .conn-legend > summary::-webkit-details-marker{ display:none }
+  .conn-legend .cl-line{ display:flex; align-items:center; gap:6px }
+  .conn-legend .m-conn{ width:16px; height:16px }
+  .conn-legend .m-conn svg{ width:14px; height:14px }
+  /* 閉じている＝チップ型のボタン。開いている＝summary が凡例の1行目に化ける。
+     こうすると開いたときに「☁️中継／↔直接 詳細…」が重複せず、それでいて summary が残るので
+     押して閉じられる（summary を消すと、自分で開いたときに閉じる手段が無くなる）。 */
+  .conn-legend .cl-mini{ display:inline-flex; align-items:center; gap:5px;
+    padding:4px 11px; background:#1d2740; border:1px solid rgba(255,255,255,.12);
+    border-radius:999px; color:#9fb0c7; line-height:1.5 }
+  .conn-legend .cl-mini .sep{ color:#48566b }
+  .conn-legend .cl-mini .more{ margin-left:2px; color:#7a8ca6 }
+  .conn-legend[open] .cl-mini{ display:none }
+  .conn-legend .cl-full{ display:none }
+  .conn-legend[open] .cl-full{ display:flex }
   /* 2カラム：左＝通話カード／右＝ロビー。狭い画面では縦に積む */
   .wrap{ width:100%; display:flex; flex-wrap:wrap; gap:18px; align-items:flex-start; justify-content:center }
   .lobby{ width:100%; max-width:440px; background:rgba(255,255,255,.04);
@@ -364,6 +385,12 @@
     <div style="margin-top:8px">いま一緒にいる人：<span class="peers" id="count">0</span> 人</div>
     <label class="snd-opt" id="sndPeerRow" style="display:none"><input type="checkbox" id="sndPeer"> 🔔 入室・退出を音で知らせる</label>
     <div id="members" class="members"></div>
+    <!-- 経路アイコンの凡例。参加した直後だけ開いて出し、数秒で畳んで1行のボタンに戻る。
+         中身は JS が入れる（行内アイコンと同じSVG定数を使い、見た目を必ず一致させるため） -->
+    <details id="connLegend" class="conn-legend" hidden>
+      <summary id="connLegendSum"></summary>
+      <div id="connLegendBody"></div>
+    </details>
     <!-- 音が届かない相手がいるときだけ出る。頼んでも直らなかった＝本人の操作が要る場合の最終手段 -->
     <div id="audioWarn" class="audio-warn" hidden></div>
     <div id="eq" class="eq" hidden aria-hidden="true"></div>
@@ -544,7 +571,8 @@ const CALL_INIT = () => ({
   warn: '',             // 直近のピア単位エラー（誰とも繋がっていない時だけ表示する）
   growTimer: null,      // 30秒ごとに滞在時間を貯めるタイマー
   soundsArmed: false,   // 入室音の解禁フラグ（参加直後1.5秒は接続が連発するので鳴らさない）
-  soundsTimer: null     // 上を解禁するタイマー
+  soundsTimer: null,    // 上を解禁するタイマー
+  legendTimer: null     // 経路アイコンの凡例を畳むタイマー（参加直後だけ開いて出すため）
 })
 // **テンプレートに入れない2つ**。どちらも「退出しても引き継ぐ」ものなので、reset で戻すと壊れる。
 const call = Object.seal({
@@ -920,14 +948,54 @@ const memberRow = (emoji, name, you, isMuted, stage, relay) => {
   // 接続経路アイコン（行の右端）。経路が分かるときだけ足す（不明なら出さない）。SVGは定数なので innerHTML で安全。
   if (relay !== undefined) {
     const c = document.createElement('span'); c.className = 'm-conn ' + (relay ? 'relay' : 'direct')
-    c.title = relay ? '中継でつないでいます（相手にあなたのIPアドレスは見えません）' : '直接つないでいます（相手にあなたのIPアドレスが見えます）'
+    // 主語は「その行の人」。自分の行と相手の行で**立場が入れ替わる**（自分の↔＝自分のIPが相手に
+    // 見える／相手の↔＝その人のIPが自分に見える）ので、you で言い分ける。以前は両方とも
+    // 「あなたの」と書いていて、相手の行では意味が逆になっていた。
+    c.title = you
+      ? (relay ? '中継ごし：あなたのIPアドレスは隠れています' : '直接：あなたのIPアドレスが見えています')
+      : (relay ? '中継ごし：この人のIPアドレスは隠れています' : '直接：この人のIPアドレスが見えています')
     c.innerHTML = relay ? CLOUD_SVG : ARROWS_SVG
     row.append(c)
   }
   return row
 }
+// 経路アイコンの凡例。中身は変わらないので一度だけ組み立て、通話中かどうかで出し入れする。
+// **主語を「その人」に固定**してあるのが要点＝自分の行にも相手の行にも同じ文が当たるので、
+// 読み手が立場を切り替えなくてよい（行ごとの正確な向きは title で補う）。
+const LEGEND_OPEN_MS = 8000   // 参加直後に開いておく時間。2行を読み切れて、居座らない長さ
+const legendEl = $('connLegend')
+const connIcon = relay => {
+  const ic = document.createElement('span')
+  ic.className = 'm-conn ' + (relay ? 'relay' : 'direct')
+  ic.innerHTML = relay ? CLOUD_SVG : ARROWS_SVG   // SVGは定数なので innerHTML で安全
+  return ic
+}
+const legendLine = (relay, text, cls) => {
+  const line = document.createElement('div'); line.className = 'cl-line' + (cls ? ' ' + cls : '')
+  const tx = document.createElement('span'); tx.textContent = text
+  line.append(connIcon(relay), tx)
+  return line
+}
+{
+  // summary は状態で姿を変える：閉じている＝チップ型のボタン／開いている＝凡例の1行目。
+  // 2行目だけが本文にある。開いたときに同じ内容を二度出さないための分け方。
+  const word = t => { const s = document.createElement('span'); s.textContent = t; return s }
+  const mini = document.createElement('span'); mini.className = 'cl-mini'
+  const sep = document.createElement('span'); sep.className = 'sep'; sep.textContent = '／'
+  const more = document.createElement('span'); more.className = 'more'; more.textContent = '詳細…'
+  mini.append(connIcon(true), word('中継'), sep, connIcon(false), word('直接'), more)
+  $('connLegendSum').append(mini, legendLine(true, '中継 ＝ その人のIPアドレスは隠れています', 'cl-full'))
+  $('connLegendBody').append(legendLine(false, '直接 ＝ その人のIPアドレスが見えています'))
+}
+// 自分で開け閉めしたら、こちらのタイマーは引っ込める（読んでいる途中で勝手に畳まないため）。
+// **`toggle` ではなく summary の `click` を見ている**：`toggle` は非同期に飛ぶので、join で
+// `open = true` した直後に届いて、直後に張ったタイマーを消してしまう。`click` ならプログラムからの
+// `open =` では飛ばず、ユーザー操作（キーボードでの開閉も click になる）だけを拾える。
+$('connLegendSum').addEventListener('click', () => { clearTimeout(call.legendTimer); call.legendTimer = null })
+
 const renderMembers = () => {
   membersEl.replaceChildren(); emojiEls.clear()
+  legendEl.hidden = !call.joinedId   // 凡例は通話中だけ（未参加のときはアイコン自体が出ない）
   if (!call.joinedId) return
   const add = (uid, emoji, name, you, isMuted, stage, relay) => {
     const row = memberRow(emoji, name, you, isMuted, stage, relay)
@@ -1306,6 +1374,11 @@ const runJoin = async () => {
   call.soundsArmed = false
   clearTimeout(call.soundsTimer)
   call.soundsTimer = setTimeout(() => { call.soundsArmed = true; call.soundsTimer = null }, 1500)
+  // 経路の凡例は参加直後だけ開いて出し、読める時間が過ぎたら畳んで1行に戻す（居座らせない）。
+  // 途中で自分で開け閉めしたら toggle ハンドラがこのタイマーを引っ込める。
+  legendEl.open = true
+  clearTimeout(call.legendTimer)
+  call.legendTimer = setTimeout(() => { legendEl.open = false; call.legendTimer = null }, LEGEND_OPEN_MS)
   syncShare()   // call.joinedId が入ったのでラベルを「共有リンク」に切り替える（冒頭の呼び出しは未参加のまま）
   addAnalyser('self', call.stream)   // 自分のマイク音量でも絵文字を跳ねさせる（ミュート中は無反応）
   startEq()                       // 点字EQの飾りを開始（音量で下から伸びる）
@@ -1390,6 +1463,7 @@ const leaveCall = () => {
   if (call.wakeLock) call.wakeLock.release().catch(() => {})
   if (call.growTimer) clearInterval(call.growTimer)            // 成長の時間加算を停止
   clearTimeout(call.soundsTimer)                               // 入室音の解禁タイマーも捨てる
+  clearTimeout(call.legendTimer)                               // 凡例を畳むタイマーも捨てる
   stopAudioWatch()   // 音声到着の監視を停止＋待ち時間と催促回数の記憶を捨てる
   stopVad(); resetTalk(); stopEq()   // 解析ループ停止＋AudioContext破棄（join が確保したものを全て解放）
   stopHeartbeat()  // ロビーへ「退出した」を通知＋定期発信を停止（ロビー部屋自体は閲覧用に残す）
