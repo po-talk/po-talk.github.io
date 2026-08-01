@@ -1507,6 +1507,10 @@ const renderMute = () => {
 renderMute()   // 初期表示
 
 const toggleMute = () => {
+  // マイクが無ければ切り替える対象も無い。ボタンは通話中しか出ないが、**つなぎ直しの
+  // 自動再参加（joinCall().then(… toggleMute())）から呼ばれる経路がある**ので、参加が
+  // 成立しなかった場合に備えて塞いでおく。ここで落ちると後ろの配信と再描画も道連れになる。
+  if (!call.stream) return
   call.muted = !call.muted; call.stream.getAudioTracks().forEach(t => t.enabled = !call.muted)
   renderMute()
   if (call.profileAction) call.profileAction.send(myProfilePayload()).catch(() => {})  // 全員へミュート状態を配信
@@ -1563,6 +1567,13 @@ const leaveCall = () => {
   stopAudioWatch()   // 音声到着の監視を停止＋待ち時間と催促回数の記憶を捨てる
   stopVad(); resetTalk(); stopEq()   // 解析ループ停止＋AudioContext破棄（join が確保したものを全て解放）
   stopHeartbeat()  // ロビーへ「退出した」を通知＋定期発信を停止（ロビー部屋自体は閲覧用に残す）
+  // 公開Nostrへの署名鍵を捨てる。**同じ鍵を使い続けると、リレーを見ている人に「同じ人が
+  // この部屋の次はあの部屋にいた」と繋げて読まれる**。鍵はページ読込ごとだったので、
+  // リロードをまたいだ追跡はできない代わりに1セッション中の活動は繋がっていた。通話ごとに
+  // 作り直せばそこも切れる。`content` を絵文字だけに絞ったのと同じ方向の話。
+  // 次の publishPresence が ??= で作り直す。飛行中の publish は call.joinedId の検査で止まる
+  // （leaveCall は同期に走り切るので、その間に再開されることはない）。
+  nostrKey = null
 
   // ② 値を初期状態へ。lastRoom（ゾンビroom検出）と leaving は据え置かれる
   resetCall()
