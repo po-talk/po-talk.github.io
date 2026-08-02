@@ -50,7 +50,7 @@
     <h2>① 部屋のリンクを貼る</h2>
     <div style="margin-top:10px">
       <label for="room">部屋の URL（アプリの「招待リンク」やアドレスバーの URL をそのまま貼る）</label>
-      <input type="text" id="room" placeholder="https://qramo.github.io/po_call/#◯◯の部屋" autocomplete="off" spellcheck="false">
+      <input type="text" id="room" placeholder="https://potalk.app/#◯◯の部屋" autocomplete="off" spellcheck="false">
       <div class="note" id="detected" style="margin-top:8px"></div>
     </div>
 
@@ -82,7 +82,7 @@
 
 <script>
 const $ = id => document.getElementById(id)
-const BASE = 'https://qramo.github.io/po_call/tools/banner.html'
+const BASE = 'https://potalk.app/tools/banner.html'
 const SIZE = 'width="300" height="96"'
 const STYLE = 'style="border:0;border-radius:14px"'
 
@@ -129,7 +129,7 @@ $('copy').onclick = async () => {
 }
 
 // 初期値（デモ用のリンク）。ユーザーは自分の部屋リンクに貼り替える
-$('room').value = 'https://qramo.github.io/po_call/#みんなの部屋'
+$('room').value = 'https://potalk.app/#みんなの部屋'
 update()
 </script>
 </body>

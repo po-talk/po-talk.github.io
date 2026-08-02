@@ -7,7 +7,7 @@
 <!--
   ぽっと通話 ライブ中バナー（ブログパーツ）。読み取り専用。
   使い方（ブログに貼る）：
-    <iframe src="https://qramo.github.io/po_call/tools/banner.html?room=部屋名"
+    <iframe src="https://potalk.app/tools/banner.html?room=部屋名"
             width="300" height="96" style="border:0;border-radius:14px" loading="lazy"></iframe>
   ?room= に自分の部屋名（URLエンコード）を入れる。
   仕組み：部屋名を SHA-256 でハッシュ化し、公開Nostrリレーの在室イベント(kind 20001)を購読。
@@ -54,7 +54,7 @@
 
 <script type="module">
 const $ = id => document.getElementById(id)
-const APP = 'https://qramo.github.io/po_call/'
+const APP = 'https://potalk.app/'
 const RELAYS = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.primal.net', 'wss://relay.nostr.band', 'wss://offchain.pub']
 const STALE_MS = 15000   // これだけ新着が無ければ「その人は退出」
 
