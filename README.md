@@ -1,4 +1,4 @@
-# 🦞 ぽっと通話 (po-call)
+# 🫖 ぽっと通話 (potalk)
 
 同じ部屋名（URL）を開いた人どうしが、そのまま音声通話できる実験的な**静的Webページ**。
 サーバ不要・**HTML1枚**（WebRTC 音声 ＋ [Trystero](https://github.com/dmotz/trystero) / Nostr）。既定はプライバシー配慮で **Cloudflare TURN 中継**を通し、相手に自分の IP が見えないようにしている。
@@ -76,7 +76,7 @@ python3 -m http.server 8000
 | アイコン / `manifest.webmanifest` / フォローカード画像 | 好みで差し替え。 |
 
 ### Cloudflare TURN（中継の既定・安定させたい人向け）
-本アプリは**既定で音声を必ず TURN 中継**に通します（`iceTransportPolicy:'relay'`）。狙いは **IP プライバシー**（中継なら相手に自分の実 IP が見えない。音声は中継でも DTLS-SRTP で暗号化されたままで、Cloudflare も中身は聞けない）。あわせて対称NAT・セルラーなど直 P2P が張れない環境の救済も兼ねます。無料の公開 TURN は不安定なので、**Cloudflare Realtime TURN ＋ 短命の資格情報を発行する小さな Worker**を推奨（Worker は "合鍵を渡すだけ" で通話は通らない＝運営は通信経路を持たない）。
+本アプリは**既定で音声を必ず TURN 中継**に通します（`iceTransportPolicy:'relay'`）。狙いは **IP プライバシー**（中継なら相手に自分の実 IP が見えない。音声は中継でも DTLS-SRTP で暗号化されたままで、Cloudflare も中身は聞けない）。あわせて対称NAT・セルラーなど直 P2P が張れない環境の救済も兼ねます。無料の公開 TURN は不安定なので、**Cloudflare Realtime TURN ＋ 短命の資格情報を発行する小さな Worker**を推奨（Worker は "合鍵を渡すだけ" で通話は通らない＝運営は通信経路を持たない）。 **この Worker のソースは [`worker/pot-turn.js`](worker/pot-turn.js) に同梱しています**（シークレットは環境変数なので、そのまま自分の Cloudflare に貼って使えます）。
 
 - Cloudflare ダッシュボード → Realtime → **TURN Server** で TURN キー（Key ID / API Token）を作成
 - Worker が `POST https://rtc.live.cloudflare.com/v1/turn/keys/$KEY_ID/credentials/generate-ice-servers`（`Authorization: Bearer $API_TOKEN`）を叩いて `iceServers` を返す。CORS で自分のオリジンだけ許可
@@ -103,8 +103,8 @@ python3 -m http.server 8000
 
 ## 📅 これまでの歩み
 
-- 2026/07/15 POPOPO の終了が発表される。po_call を構想
-- 2026/07/16 po_call をローンチ（GitHub で作成・公開）
+- 2026/07/15 POPOPO の終了が発表される。ぽっと通話を構想
+- 2026/07/16 ぽっと通話をローンチ（GitHub で作成・公開）
 - 2026/07/17 POPOPO の知り合いと遊び始める
 - 2026/07/18 通話中の部屋を実装。「誰がいて・誰が話していて・どの部屋がライブか」を可視化
 - 2026/07/19
@@ -205,7 +205,7 @@ python3 -m http.server 8000
 
 ![参照元・パス・ホスト・ブラウザ・OS・デバイスの内訳](images/readme/analytics-sources.png)
 
-※ ブラウザの「不明（Unknown）」は元画面で数値が隠れていたため未記載。すべてページ全体（`/po_call/`・ホスト `qramo.github.io`）へのアクセスです。
+※ ブラウザの「不明（Unknown）」は元画面で数値が隠れていたため未記載。すべてページ全体（当時のURL `qramo.github.io/po_call/`）へのアクセスです。
 
 ---
 
