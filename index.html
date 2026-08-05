@@ -1336,7 +1336,13 @@ const joinCall = async () => {
   try { await runJoin() } finally { joining = false; $('join').disabled = false }
 }
 
+// ロビーの一覧からタップして入るときは、ミュートで入室する。**誰かの会話に入っていく**ので
+// ノックのつもり。部屋名を打って入る場合（自分の部屋を開く・待ち合わせ）は対象外。
+// 一覧に出ている＝誰かが在室を発信している、なので「人がいる」の判定は要らない（推測しない）。
+// **つなぎ直しは joinCall() を直接呼ぶのでここを通らない**＝預けたミュート状態の復元が生きる。
+let joinMuted = false
 const runJoin = async () => {
+  const muteOnJoin = joinMuted; joinMuted = false   // 失敗しても次の参加に持ち越さないよう、先に消費する
   // 空欄のときは名前から作る（'lobby' に落とすと、その名前が #lobby としてURLに焼き付き、
   // 以後ハッシュ優先で自動命名が効かなくなって二度と抜けられなくなる）。名前も無ければ促して中止。
   const roomId = capRoom(roomInput.value.trim() || defaultRoom())
@@ -1362,6 +1368,9 @@ const runJoin = async () => {
   setState('マイクを準備しています…（「許可」を押してください）', 'busy')
   try {
     call.stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    // 参加が成立する前に効かせる。こうすると相手へ最初に配るプロフィールも、ロビーの
+    // ハートビートも、最初からミュートとして出る（あとから切り替えるとズレる瞬間ができる）。
+    if (muteOnJoin) { call.muted = true; call.stream.getAudioTracks().forEach(t => t.enabled = false); renderMute() }
   } catch (e) {
     // 生の DOMException 名（NotAllowedError 等）を出しても伝わらないので、起きたことを日本語で言う
     const why = { NotAllowedError: 'マイクの使用が許可されませんでした。ブラウザの設定を確認してください',
@@ -1800,12 +1809,13 @@ const renderLobby = () => {
 const selectRoom = room => {
   if (room === call.joinedId) return
   if (call.joinedId) {
-    if (!confirm('参加中の部屋「' + call.joinedId + '」を退出して「' + room + '」に移りますか？')) return
+    if (!confirm('参加中の部屋「' + call.joinedId + '」を退出して「' + room + '」に移りますか？\nミュート状態で入室します。')) return
     leaveCall()   // 今の部屋を退出（非同期の後片付けは leaving が保持し、次の参加で待たれる）
   } else {
-    if (!confirm('「' + room + '」に参加しますか？')) return   // 未参加時のミスタップ防止
+    if (!confirm('「' + room + '」に参加しますか？\nミュート状態で入室します。')) return   // 未参加時のミスタップ防止
   }
   roomInput.value = room; syncRoomCount(); syncShare()
+  joinMuted = true   // 一覧から入る＝誰かの会話に入っていくので、ミュートで始める
   joinCall()      // そのまま入室。参加の⓪で leaving を待つので、部屋移動でも取りこぼさない
 }
 
