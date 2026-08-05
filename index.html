@@ -872,7 +872,8 @@ renderProfileSummary()
 
 // 成長（ブラウザを育てる遊び）。累積を localStorage に貯め、段階の絵文字を出す。数字は見せない。
 // ・seconds：通話中30秒ごとに加算  ・joins：参加回数（サイクル）  ・days：使った日数（別々の日）
-// 木（🌲🌳）は日数ゲートで「だいたい2週間＋十分な累積」が必要。分岐は1回あたりの平均通話時間。
+// 花（🌷🌻）と木（🌲🌳）は日数ゲートで「数日〜2週間＋十分な累積」が必要。**どちらの段も分岐は
+// 1回あたりの平均通話時間**で、短め多め＝小さいほう（🌷🌲）／長めときどき＝大きいほう（🌻🌳）。
 const STATS_KEY = 'pot-call-stats'
 let stats = { seconds: 0, joins: 0, days: 0, lastDay: '' }
 try { stats = { ...stats, ...JSON.parse(localStorage.getItem(STATS_KEY) || '{}') } } catch {}
@@ -883,11 +884,11 @@ const stageOf = () => {
   const avg = stats.joins ? min / stats.joins : 0
   // 🌷 から上は「使った日数」ゲートを効かせ、1日で稼いでも届かないようにする（ゆっくり育つ）
   if (stats.days >= 14 && min >= 180 && stats.joins >= 20) return avg < 12 ? '🌲' : '🌳'  // 短め多め→針葉樹／長めときどき→広葉樹
-  if (stats.days >= 4  && min >= 60  && stats.joins >= 10) return '🌷'
+  if (stats.days >= 4  && min >= 60  && stats.joins >= 10) return avg < 12 ? '🌷' : '🌻'  // 短め多め→チューリップ／長めときどき→ひまわり
   if (stats.joins >= 3 && min >= 5) return '🌿'   // 最初の1段だけは初日でも反応（ごほうび）
   return '🌱'
 }
-const STAGE_NOTE = { '🌱': '🌱（←話して育てよう）', '🌿': '🌿（すくすく）', '🌷': '🌷（花がさいた）', '🌲': '🌲（りっぱな針葉樹！）', '🌳': '🌳（りっぱな広葉樹！）' }
+const STAGE_NOTE = { '🌱': '🌱（←話して育てよう）', '🌿': '🌿（すくすく）', '🌷': '🌷（花がさいた）', '🌻': '🌻（大きな花がさいた）', '🌲': '🌲（りっぱな針葉樹！）', '🌳': '🌳（りっぱな広葉樹！）' }
 const renderGrow = () => { $('growNote').textContent = STAGE_NOTE[stageOf()] }
 renderGrow()
 // 参加中はプロフィール変更を止める（roomInput と同様。送信機能を足すまで見た目を実態に合わせる）
