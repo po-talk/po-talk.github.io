@@ -436,8 +436,9 @@
         <button id="copy">🔗 招待リンクをコピー</button>
         <button id="qr" aria-expanded="false">📱 QRコード</button>
       </div>
-      <!-- 版の表示。不具合の報告で「どの版か」が分かるように。中身は APP_VERSION から入れる -->
-      <div class="ver" id="ver"></div>
+      <!-- 版の表示。不具合の報告で「どの版か」が分かるように。中身は APP_VERSION から入れる。
+           β は #ver の**外**に置くこと（中に入れると test/smoke.py の T15 が版番号と誤認する） -->
+      <div class="ver"><span id="ver"></span><span id="chan"></span></div>
     </div>
   </div>
 </div>
@@ -664,6 +665,13 @@ const call = Object.seal({
 // 呼ぶ側が先に副作用を済ませてから使うこと（leaveCall の①→②の順）。
 const resetCall = () => Object.assign(call, CALL_INIT())
 $('ver').textContent = APP_VERSION
+// 本番（potalk.app）以外では版の横に β を出す。旧URL `qramo.github.io/po_call/` を
+// **ベータ配布路**として使うため（2026-08-14 の方針転換。HANDOFF「旧サイト」の項参照）。
+// 狙いは「スクリーンショット1枚でどちらのビルドか分かる」こと。同じ日に常駐クライアントで
+// 「差し替えたつもりが古いままだった」を実際に踏んでいる。
+// **hostname から自動で決めるので、beta ブランチ側に差分を持たなくてよい**
+// （差分にすると main を取り込むたびに衝突する。持たせる差分は CNAME と Analytics トークンだけ）。
+if (location.hostname !== 'potalk.app') $('chan').textContent = ' β'
 
 // ホーム追加（PWA）判定。display-mode が使えない古いiOS向けに navigator.standalone も見て
 // html.pwa を付ける（CSS側で上部の余白＝ステータスバー回避に使う）。
