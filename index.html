@@ -551,6 +551,7 @@
 <script type="module">
 // ───────────────────────────────────────────────────────────────────────────
 // 目次（1ファイルに全部入っているので、探すときの手がかり）
+//   ─ 接続の掃除     繋がらなかった PeerConnection を閉じる（**Trystero 読込より前に置く**）
 //   ⓪ 通話の状態     call オブジェクト（join が確保し leave が返すもの）
 //   ① 起動まわり     PWA判定 / アプリ内ブラウザ検知 / ヘルプ / つなぎ直しの予約
 //   ② 共有           QRコード / 招待リンク / 部屋名の整形（capText・capRoom）
@@ -567,6 +568,47 @@
 // この対称性が崩れると、再参加が古い状態を引き継いで壊れる。通話中の状態は ⓪ の CALL_INIT に
 // 集めてあり、leaveCall がそこから丸ごと戻すので、**足す場所は CALL_INIT**（値だけなら
 // それで完結する。タイマーやトラックなど「止める」処理があるときだけ leaveCall の①にも足す）。
+// ───────────────────────────────────────────────────────────────────────────
+// ── 繋がらなかった PeerConnection の掃除（**Trystero を読み込む前に仕込む**） ──────
+// **Trystero は握手が完了しなかった接続を、leave() でも閉じない。**
+// 2026-08-13 に chrome://webrtc-internals のダンプを解析して判明した実測：
+//   ・接続は**ページを開いた瞬間（ロビー参加）だけ**作られ、1回で 20〜26本。
+//     部屋の出入りでは作られない（既にロビーで繋がっている相手はそのまま使い回す）。
+//   ・そのうち実在の相手は 2〜4本。**残り約20本は「もう居ない誰か」**
+//     ＝公開リレーに残った在室通知に掛けて、返事が返ってこない相手。
+//   ・幽霊は connectionState が **'new' のまま永久に座る**（'failed' にすらならないので
+//     Trystero 側の後始末も動かない）。ICE が通らず 'failed' になったものも閉じられない。
+//   ・実測90本すべて close() が一度も呼ばれていなかった。
+// Chrome には1ページで作れる PeerConnection の上限があり、当たると**新しい接続を一切作れなくなる**
+// （リロードするまで復帰しない）。常駐クライアントは 2026-08-07 に実際に踏んだ。
+//
+// **なぜ自分で閉じてよいか**（Trystero 0.25.2 のソースで確認。上げたら確かめ直すこと）：
+//   ・Trystero の状態監視は 'failed' と **'closed' を同じ扱い**にして後始末へ進む。
+//     つまりこちらが閉じても、あちらの整合性は壊れない。
+//   ・Trystero には**握手そのものの時間切れが無い**（15秒の定数は ICE 収集の待ちだけ）。
+//     だから幽霊が永久に残る。**ここを埋めるのがこの処理。**
+// 猶予60秒の根拠：実測では成功した接続はどれも数秒で connected になっていた。
+// 常駐クライアントで**23時間連続**（両者で488本作成・336本掃除・生存4のまま）実証済み。
+//
+// 数はデバッグ用に window.__potPc() で読める（UIには出さない）。原因不明の不調が出たら
+// 開発者コンソールで叩いてもらうと、溜まっているのかどうかが一発で分かる。
+const PC_SWEEP_MS = 60 * 1000
+let pcMade = 0, pcOpen = 0, pcSwept = 0
+{
+  const Base = window.RTCPeerConnection
+  window.RTCPeerConnection = class extends Base {
+    constructor(...a) {
+      super(...a); pcMade++; pcOpen++
+      this.addEventListener('connectionstatechange', () => {
+        if (this.connectionState === 'failed') this.__sweep()
+      })
+      setTimeout(() => { if (this.connectionState !== 'connected') this.__sweep() }, PC_SWEEP_MS)
+    }
+    __sweep() { if (this.__counted) return; pcSwept++; this.close() }
+    close() { if (!this.__counted) { this.__counted = true; pcOpen-- } return super.close() }
+  }
+}
+window.__potPc = () => ({ open: pcOpen, made: pcMade, swept: pcSwept })
 // ───────────────────────────────────────────────────────────────────────────
 // 版。**ここが唯一の定義**（画面表示もここから入れる）。ファイル冒頭のコメントにも同じ番号が
 // 書いてあるので、上げるときは両方直すこと（食い違いは test/smoke.py の T15 が検出する）。
