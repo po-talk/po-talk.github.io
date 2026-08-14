@@ -40,7 +40,7 @@
   script-src 'self' 'unsafe-inline' https://esm.sh https://static.cloudflareinsights.com;
   style-src 'self' 'unsafe-inline';
   img-src 'self' data:;
-  connect-src 'self' https://esm.sh https://pot-turn.itsuma-kuramoto.workers.dev https://cloudflareinsights.com wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://relay.nostr.band wss://offchain.pub;
+  connect-src 'self' https://esm.sh https://pot-turn.itsuma-kuramoto.workers.dev https://cloudflareinsights.com wss://relay.primal.net wss://relay02.lnfi.network wss://purplerelay.com wss://bucket.coracle.social wss://yabu.me/v2 wss://x.kojira.io wss://relay.notoshi.win wss://relay.mostr.pub;
   manifest-src 'self';
   base-uri 'self';
   form-action 'none';
@@ -650,7 +650,8 @@ const CALL_INIT = () => ({
   soundsTimer: null,    // 上を解禁するタイマー
   legendTimer: null,    // 経路アイコンの凡例を畳むタイマー（参加直後だけ開いて出すため）
   iceServers: null,     // いま通話に渡してある iceServers 配列。**中身を入れ替えて使う**（refreshIce）
-  iceTimer: null        // 上を定期的に入れ替えるタイマー
+  iceTimer: null,       // 上を定期的に入れ替えるタイマー
+  nostrPubAt: 0         // 在室を最後に Nostr へ流した時刻（ハートビートより粗く間引くため）
 })
 // **テンプレートに入れない2つ**。どちらも「退出しても引き継ぐ」ものなので、reset で戻すと壊れる。
 const call = Object.seal({
@@ -968,7 +969,7 @@ const TRYSTERO_BASE = {
   appId: 'kuramo-webrtc-call',
   // 相手発見を速く・確実に：信頼できるnostrリレーを明示＋多重接続（デフォルトの当たり外れ対策）
   relayConfig: {
-    urls: ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.primal.net', 'wss://relay.nostr.band', 'wss://offchain.pub'],
+    urls: ['wss://relay.primal.net', 'wss://relay02.lnfi.network', 'wss://purplerelay.com', 'wss://bucket.coracle.social', 'wss://yabu.me/v2', 'wss://x.kojira.io', 'wss://relay.notoshi.win', 'wss://relay.mostr.pub'],
     redundancy: 5
   }
 }
@@ -1000,10 +1001,25 @@ const trysteroConfig = ice => ice
   : TRYSTERO_BASE
 // ライブラリ読込は一度だけ。ロビー（ページ読込時）と参加（ボタン押下時）で共有する。
 // 失敗時はキャッシュを捨てて次回リトライできるようにする（参加フローの段階別エラー表示を壊さない）。
-let trysteroPromise = null
+let trysteroPromise = null, trysteroMod = null
 const loadTrystero = () => {
-  if (!trysteroPromise) trysteroPromise = import('https://esm.sh/trystero@0.25.2?bundle').catch(e => { trysteroPromise = null; throw e })
+  if (!trysteroPromise) trysteroPromise = import('https://esm.sh/trystero@0.25.2?bundle')
+    .then(m => (trysteroMod = m))
+    .catch(e => { trysteroPromise = null; throw e })
   return trysteroPromise
+}
+// 診断用（UIには出さない。`window.__potPc()` と同じ用途）。
+// **シグナリングのリレーが何本生きているか**を数字で見る。2026-08-14 の実測では
+// 当時の5本のうち生きていたのは1本だけで（残りは rate-limit / PoW要求 / 接続不可）、
+// ロビーの取りこぼしの一因になっていた。**リレー一覧は放っておくと腐る**ので、
+// 不調の相談を受けたらまずこれを叩いてもらうこと。測り直しは `test/relaycheck.py`。
+window.__potRelays = () => {
+  if (!trysteroMod?.getRelaySockets) return null   // まだライブラリを読み込んでいない
+  const name = ['connecting', 'open', 'closing', 'closed']
+  const relays = {}
+  for (const [url, ws] of Object.entries(trysteroMod.getRelaySockets())) relays[url] = name[ws.readyState] ?? ws.readyState
+  const list = Object.values(relays)
+  return { open: list.filter(v => v === 'open').length, total: list.length, relays }
 }
 
 // 状態表示。kind は 'idle'|'busy'|'ok'|'warn'|'error' でドットの色に対応する（文字側に絵文字は置かない）
@@ -1683,8 +1699,19 @@ const roomHash = async room => {
   const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('potto:' + room))
   return [...new Uint8Array(buf)].slice(0, 8).map(b => b.toString(16).padStart(2, '0')).join('')   // 先頭64bit
 }
+// 在室を Nostr へ流す間隔。**ハートビート（5秒）とは別に、粗く間引く。**
+// 2026-08-14：公開リレーから `rate-limited: you are noting too much` を返されていた。
+// 5秒ごと×リレー本数＝毎分12件×N は、公開リレーから見れば普通に「投稿しすぎ」。
+// この publish は**ブログのバナーが「この部屋はライブか」を読むため**だけのものなので、
+// 5秒の粒度は要らない。**読み取り側 `tools/banner.html` の STALE_MS と対**になっているので、
+// **どちらかだけ変えるとバナーが消える**（こちらを伸ばすなら向こうも伸ばす）。
+const NOSTR_PUBLISH_MS = 30000
 const publishPresence = async () => {
   if (!call.joinedId) return
+  // 入室直後（nostrPubAt=0）は必ず1回流す。退出で resetCall が 0 に戻すので、
+  // 部屋を移ったときも即座に出る。
+  if (call.nostrPubAt && Date.now() - call.nostrPubAt < NOSTR_PUBLISH_MS) return
+  call.nostrPubAt = Date.now()
   const room = call.joinedId
   try {
     const nt = await loadNostr()

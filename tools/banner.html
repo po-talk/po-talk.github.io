@@ -55,8 +55,12 @@
 <script type="module">
 const $ = id => document.getElementById(id)
 const APP = 'https://potalk.app/'
-const RELAYS = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.primal.net', 'wss://relay.nostr.band', 'wss://offchain.pub']
-const STALE_MS = 15000   // これだけ新着が無ければ「その人は退出」
+const RELAYS = ['wss://relay.primal.net', 'wss://relay02.lnfi.network', 'wss://purplerelay.com', 'wss://bucket.coracle.social', 'wss://yabu.me/v2', 'wss://x.kojira.io', 'wss://relay.notoshi.win', 'wss://relay.mostr.pub']
+// これだけ新着が無ければ「その人は退出」。
+// ★本体 index.html の NOSTR_PUBLISH_MS（在室を流す間隔）と**対**になっている。
+// 2026-08-14：本体を5秒→30秒に間引いた（公開リレーに「投稿しすぎ」と絞られていたため）ので、
+// こちらも 15秒→90秒 に広げた。**片方だけ変えると、居るのに居ないと表示される。**
+const STALE_MS = 90000
 
 const params = new URLSearchParams(location.search)
 const room = (params.get('room') || '').slice(0, 60)
