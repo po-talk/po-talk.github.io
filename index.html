@@ -6413,7 +6413,10 @@ const openLobby = async (again, status, soft = false) => {
     }
     // 新しい閲覧者が来たら、自分が通話中なら即座に在室を送って一覧を埋める
     lobbyRoom.onPeerJoin = peerId => { lobbyPeers.add(peerId); renderViewers(); if (call.joinedId) sendHeartbeat() }
-    lobbyRoom.onPeerLeave = peerId => { lobbyPeers.delete(peerId); lobbyRenderSeen.delete(peerId); renderViewers(); presences.delete(peerId); renderLobby() }
+    // ピア切断は一時的な回線揺れでも起きる。ここで在室を即消すと、残りの参加者がいる部屋まで
+    // 一覧から点滅して消える。明示的な退出(room:null)は上で即時反映し、無応答の在室は
+    // 下の STALE_MS（30秒）で掃除する＝切断イベントだけでは一覧を変えない。
+    lobbyRoom.onPeerLeave = peerId => { lobbyPeers.delete(peerId); lobbyRenderSeen.delete(peerId); renderViewers() }
     // 取りこぼし対策：一定時間更新の無い相手を掃除
     lobbySweep = setInterval(() => {
       const cut = Date.now() - STALE_MS; let changed = false
