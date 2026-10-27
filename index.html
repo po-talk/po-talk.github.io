@@ -893,8 +893,13 @@
   .lobby-more{ font-size:12px; color:var(--note); padding:6px 2px }   /* 上限で省略した部屋数の注記 */
   .lobby-viewers{ margin:12px 0 0; font-size:12.5px; color:var(--note) }
   .lobby-note{ margin:12px 0 0; font-size:12px; color:var(--note); line-height:1.6 }
+  .lobby-intro{ margin:0 0 12px }
+  .service-badges{ display:flex; flex-wrap:wrap; gap:6px; margin:0 0 12px; padding:0; list-style:none; font-size:12px; color:var(--sub) }
+  .service-badges li{ padding:3px 9px; border-radius:999px; background:var(--chip) }
   .legal{ width:100%; max-width:900px; margin:20px auto 0; text-align:center; font-size:11px; color:var(--legal); line-height:1.7 }
   .legal a{ color:var(--legal-link) }
+  .legal nav{ display:flex; flex-wrap:wrap; justify-content:center; gap:4px 14px; font-size:12px }
+  .legal p{ margin:8px 0 0 }
   .lobby-list{ display:flex; flex-direction:column; gap:10px; max-height:56vh; overflow-y:auto }
   .room{ width:100%; margin:0; padding:12px 14px; text-align:left; font-weight:400; font-size:14px;
     background:var(--panel); border:1px solid var(--card-border); border-radius:12px }
@@ -911,6 +916,8 @@
   .room-top{ display:flex; align-items:center; gap:8px }
   .room-name{ font-weight:700; font-size:15px; min-width:0;
     white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
+  .room-bot{ display:block; margin-top:4px; font-size:12px; color:var(--link) }
+  .room-description{ margin-top:4px; font-size:12px; color:var(--sub); line-height:1.6 }
   .room-count{ margin-left:auto; flex:none; white-space:nowrap; color:var(--link); font-weight:700; font-size:13px }
   /* 満室は**目安**なので、押せなくはしない（色だけ落として「たぶん入れない」と伝える） */
   .room-count.full{ color:var(--warn) }
@@ -1107,7 +1114,10 @@
     <h1><span><span id="brandMark">🫖</span> ぽっと通話</span><span>〈実験版〉</span></h1>
     <button id="help" class="help-btn" type="button" aria-haspopup="dialog">これはなに？</button>
   </div>
-  <p class="sub">同じ部屋を開いた人どうし、声でつながります。</p>
+  <ul class="service-badges" aria-label="サービスの特徴">
+    <li>無料</li><li>マイクを使います</li>
+  </ul>
+  <p class="sub">ブラウザでそのまま話せる、登録不要の音声通話。<br>部屋のリンクを共有するだけで、最大8人で雑談できます。アプリのインストールも、アカウント登録もいりません。</p>
 
   <div id="setupFields" class="collapsible"><div>
   <details id="profileBox" class="profile">
@@ -1364,17 +1374,25 @@
     <h2>☎️ 通話中の部屋</h2>
     <button id="lobbyRefresh" class="retry-btn" type="button">🔄 更新</button>
   </div>
+  <p class="lobby-note lobby-intro">部屋をタップして「参加する」を押すと、入室します。雑談部屋への入室時にマイクの許可を求められます。配信部屋の聞き役はマイクを使いません。非公開の部屋はありません。過去の会話は残りません。</p>
   <div class="lobby-status" id="lobbyStatus">🛰 ロビーに接続中…</div>
   <div class="lobby-list" id="lobbyList"></div>
   <label class="snd-opt"><input type="checkbox" id="sndRoom"> 🔔 新しい部屋ができたら音で知らせる</label>
   <label class="snd-opt" id="ntfRoomOpt" hidden><input type="checkbox" id="ntfRoom"> 📢 パソコンの通知でも知らせる（ほかの画面を見ているとき）<span class="ntf-note" id="ntfRoomNote"></span></label>
   <div class="lobby-viewers" id="lobbyViewers"></div>
-  <p class="lobby-note">部屋をタップするとそのまま入室します。通話中は確認のうえ移動します。<br>新しい部屋の音と通知は、このタブを開いている間だけ届きます（閉じると届きません。スマホは裏に回ると届きません）。タブの名前にも、通話中の部屋の数が出ます。</p>
+  <p class="lobby-note">通話中は確認のうえ移動します。<br>新しい部屋の音と通知は、このタブを開いている間だけ届きます（閉じると届きません。スマホは裏に回ると届きません）。タブの名前にも、通話中の部屋の数が出ます。</p>
 </aside>
 </div>
 
 <footer class="legal">
-  このサイトはアクセス測定に <a href="https://www.cloudflare.com/web-analytics/" target="_blank" rel="noopener">Cloudflare Web Analytics</a> を利用しています（Cookie不使用・個人を特定する情報は取得しません）。
+  <nav aria-label="ガイド">
+    <a href="/start/" target="_blank" rel="noopener">はじめに（初めての方へ）</a>
+    <a href="/manual/" target="_blank" rel="noopener">使い方（画面の順に説明）</a>
+    <a href="/tech/" target="_blank" rel="noopener">しくみ（サーバなしで動く理由）</a>
+    <a href="/about/" target="_blank" rel="noopener">運営（制作者と方針）</a>
+  </nav>
+  <p>ぽっと通話は実験中のサービスです。会話はここに保存されません。</p>
+  <p>このサイトはアクセス測定に <a href="https://www.cloudflare.com/web-analytics/" target="_blank" rel="noopener">Cloudflare Web Analytics</a> を利用しています（Cookie不使用・個人を特定する情報は取得しません）。</p>
 </footer>
 
 <!-- 公開されたお便りを大きく出す紙。**モーダルにしない**のが要点で、後ろの通話操作
@@ -8198,6 +8216,8 @@ const renderLobby = () => {
   renderTabMark()
   names.slice(0, LOBBY_MAX_ROOMS).forEach(room => {
     const people = byRoom.get(room)
+    // 常設表示は名前ではなく既知のIDで判定。同名の一般部屋は通常どおり扱う。
+    const echoRoom = room === MOVED_ROOMS['やまびこ部屋⛰️（5秒で返信）']
     // 活発さ＝その部屋の誰かが話していれば、その最大値。内側のリングの濃さで示す
     const act = Math.max(0, ...people.map(p => p.talk || 0))
     const btn = document.createElement('button')
@@ -8207,7 +8227,7 @@ const renderLobby = () => {
     // 指紋そのものは出さない＝長いだけで読み手には意味がない。
     const nm = document.createElement('span'); nm.className = 'room-name'
     const tagged = people.find(p => p.tag)   // 部屋の中で同じ値に収束している（meta 同期）ので最初の1人でよい
-    nm.textContent = tagged ? '🏷 ' + tagged.tag : (isBcRoom(room) ? '📣 ' : '🏠 ') + lobbyName(room, people)
+    nm.textContent = echoRoom ? '🏠 やまびこ部屋 ⛰️' : tagged ? '🏷 ' + tagged.tag : (isBcRoom(room) ? '📣 ' : '🏠 ') + lobbyName(room, people)
     // 満室の表示は**目安**（在室情報は30秒失効なのでずれる）。**押せるままにしておく**＝
     // 空いているのに入れない人を作らないため。実際の判定は入室時（checkCapacity）。
     const full = people.length >= roomCapOf(room)
@@ -8238,7 +8258,7 @@ const renderLobby = () => {
     }
     const dur = document.createElement('div'); dur.className = 'room-dur'
     const durText = document.createElement('span')
-    durText.textContent = '⏱ ' + fmtDuration(roomSeconds(room, people))
+    durText.textContent = STANDING_ROOMS.has(room) ? '常設' : '⏱ ' + fmtDuration(roomSeconds(room, people))
     const eq = document.createElement('span'); eq.className = 'room-eq'
     eq.dataset.act = act                 // 活発さ(0〜3)をEQの高さの元にする。実音声ではなくランダム
     eq.textContent = lobbyEqFrame(act)   // 初期フレーム（次のtickまで空にならないように）
@@ -8270,7 +8290,14 @@ const renderLobby = () => {
       rp.append(im, n)
       ppl.append(rp)
     }
-    btn.append(top); if (sub) btn.append(sub); btn.append(dur, ppl)
+    btn.append(top)
+    if (echoRoom) {
+      const bot = document.createElement('span'); bot.className = 'room-bot'; bot.textContent = '🤖 ボット常設中'
+      const description = document.createElement('div'); description.className = 'room-description'
+      description.textContent = '山彦が5秒で返します。一人でマイクの動作確認ができます。'
+      btn.append(bot, description)
+    }
+    if (sub) btn.append(sub); btn.append(dur, ppl)
     btn.onclick = () => askRoom(room, lobbyName(room, people))
     list.append(btn)
     if (lobbyAsk && lobbyAsk.room === room) {   // タップした部屋の直下に2択
