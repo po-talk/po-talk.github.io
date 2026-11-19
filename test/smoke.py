@@ -2809,6 +2809,54 @@ def T86(r, room):
         except Exception: pass
 
 
+def T88(r, room):
+    """リモコン（v0.16.25・docs/PROTOCOL.md §10.1）：設定タブの「ボタン機器とつなぐ」でコードが出る → 機器の代わり
+    （node test/remote_dev.mjs）が同じコードから鍵を導いて公開リレーへ toggle を流す → ページのミュートが切り替わり、
+    状態 {in:true, m:true} が機器に返る。hello には状態だけ返す（切り替えない）。同じイベントの流し直し（リプレイ）は
+    1 回しか効かない。解除でコードが消える。**本物の公開 Nostr リレーを使う**ので、往復に数秒かかる。
+    """
+    node = shutil.which('node') or next((p for p in ('/opt/homebrew/bin/node', '/usr/local/bin/node') if os.path.exists(p)), None)
+    if not node:
+        r.check('T88', 'リモコン：node が無いので飛ばす', True, 'pass', 'node を入れると走る')
+        return
+    dev = os.path.join(ROOT, 'test', 'remote_dev.mjs')
+
+    def device(action, wait=12):
+        out = subprocess.run([node, dev, code, action, str(wait)], capture_output=True, text=True, timeout=wait + 20).stdout
+        return [l.split(' ', 1)[1] for l in out.splitlines() if l.startswith('state ')]
+    a = r.open_tab()
+    a.eval("localStorage.setItem('pot-call-hide-help','1'); localStorage.removeItem('pot-call-remote'); document.querySelectorAll('dialog[open]').forEach(d => d.close())")
+    r.join(a, room + 'RC')
+    joined = a.wait_for("!document.getElementById('tabs').hidden", timeout=DISCOVER)
+    a.eval("document.getElementById('tabSettings').click(); document.getElementById('remotePair').click()", await_promise=False)
+    shown = a.wait_for("document.getElementById('remoteCode').textContent.length === 19 && !document.getElementById('remoteOn').hidden", timeout=SHORT)
+    code = a.eval("document.getElementById('remoteCode').textContent") if shown else ''
+    fmt = bool(re.fullmatch(r'[0-9A-HJKMNP-TV-Z]{4}(-[0-9A-HJKMNP-TV-Z]{4}){3}', code or ''))
+    ready = a.wait_for("document.getElementById('remoteStat').textContent === '機器からの合図を待っています'", timeout=SHORT)
+    time.sleep(3)   # リレーへの購読が張られるのを待つ
+    muted0 = a.eval("document.getElementById('mute').classList.contains('muted')")
+    # ① toggle → ミュートになり、状態が機器に返る
+    st1 = device('toggle')
+    muted1 = a.eval("document.getElementById('mute').classList.contains('muted')")
+    seen = a.eval("document.getElementById('remoteStat').textContent")
+    got1 = any(json.loads(x).get('m') is True and json.loads(x).get('in') is True for x in st1)
+    # ② hello → 状態だけ返る（切り替わらない）
+    st2 = device('hello', 8)
+    muted2 = a.eval("document.getElementById('mute').classList.contains('muted')")
+    got2 = any(json.loads(x).get('m') is True for x in st2)
+    # ③ リプレイ：同じイベントを 2 回 → 1 回だけ効く（ミュート → 解除 で止まる）
+    device('replay', 10)
+    muted3 = a.eval("document.getElementById('mute').classList.contains('muted')")
+    # ④ 解除
+    a.eval("document.getElementById('remoteUnpair').click()", await_promise=False)
+    off = a.wait_for("document.getElementById('remoteOn').hidden && !document.getElementById('remoteOff').hidden && !localStorage.getItem('pot-call-remote')", timeout=SHORT)
+    ok = bool(joined and shown and fmt and ready and not muted0 and muted1 and got1 and muted2 and got2 and not muted3 and off and seen == '✓ 機器とつながっています')
+    r.check('T88', 'リモコン：コード発行・機器の toggle でミュート・状態が機器に返る・hello は状態だけ・リプレイは 1 回だけ・解除', ok, 'pass',
+            '参加=%s / コード=%s(%s) / 待機=%s / 初期=%s → toggle=%s(返事=%s) → hello=%s(返事=%s) → replay=%s / 表示=%s / 解除=%s'
+            % (bool(joined), code, fmt, bool(ready), muted0, muted1, got1, muted2, got2, muted3, seen, bool(off)))
+    click_leave(a)
+
+
 def T85(r, room):
     """β 限定の大音量テスト（?loudtest=1・v0.16.12）と、見張りの数値
 
@@ -3991,6 +4039,8 @@ def main():
             T80(r, room)
         if run('T81'):
             T81(r, room)
+        if run('T88'):
+            T88(r, room)
         if run('T82'):
             T82(r, room)
         if run('T83'):

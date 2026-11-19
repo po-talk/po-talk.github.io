@@ -470,6 +470,12 @@
   .vol-ic, .vol-lbl{ flex:none }
   .vol-val{ flex:none; width:3.4em; text-align:right; font-variant-numeric:tabular-nums }
   .vol-note{ margin:4px 0 0; font-size:11.5px; color:var(--note); line-height:1.5 }
+  /* リモコン（v0.16.25）：設定タブの末尾。コードは選びやすく（user-select:all）・等幅 */
+  .remote-row{ margin-top:14px; padding-top:10px; border-top:1px solid var(--border) }
+  .remote-head{ display:flex; align-items:center; justify-content:space-between; gap:8px; font-size:12.5px; font-weight:700; color:var(--sub) }
+  .remote-stat{ font-weight:600; font-size:11.5px; color:var(--note) }
+  .remote-code{ display:block; margin:8px 0 6px; font-size:17px; letter-spacing:.06em; font-family:ui-monospace, SFMono-Regular, Menlo, monospace; user-select:all; color:var(--text) }
+  .remote-row .fn-row{ margin-top:4px }
   .bgm-row{ margin-top:14px }
   #copy{ background:var(--chip); color:var(--chip-fg); margin-top:8px; padding:10px; font-size:14px }
   /* 版の表示。共有ボタンの右下に、目に留まらない濃さで置く（普段は意識させない） */
@@ -1367,6 +1373,19 @@
       <label class="snd-opt" id="reqOpenRow" hidden><input type="checkbox" id="reqOpen"> 🙋 通話希望者募集（聞いている人が「通話希望」を出せます）</label>
       <p class="vol-note" id="sndTtsProg" hidden></p>
       <p class="vol-note" id="sndTtsCrash" hidden></p>
+      <!-- リモコン（v0.16.25）：M5ATOM Matrix などの物理ボタンでミュートを切り替える。経路は在室の直 publish と同じ
+           公開 Nostr リレー（運営サーバは増えない）。ペアリングコードを機器に入れると、機器とこのブラウザが同じ鍵を導いて
+           相手を見つける。コードはこのブラウザに保存（別の端末では別のコード＝機器 1 台はブラウザ 1 つと組になる）。JS は 27 -->
+      <div id="remoteRow" class="remote-row">
+        <div class="remote-head"><span>🎛 リモコン（物理ボタン）</span><span id="remoteStat" class="remote-stat"></span></div>
+        <div id="remoteOff"><div class="fn-row"><button id="remotePair" type="button" class="retry-btn">ボタン機器とつなぐ</button></div>
+          <p class="vol-note">M5ATOM Matrix などのボタンでミュートを切り替えられます。このページが裏のタブにあっても、スマホでも効きます。</p></div>
+        <div id="remoteOn" hidden>
+          <code id="remoteCode" class="remote-code"></code>
+          <div class="fn-row"><button id="remoteCopy" type="button" class="retry-btn">コードをコピー</button><button id="remoteUnpair" type="button" class="retry-btn">解除</button></div>
+          <p class="vol-note">機器の設定画面にこのコードを入れてください。コードはこのブラウザに保存されます（他の端末では別のコードになります）。</p>
+        </div>
+      </div>
     </div>
     <!-- 音が届かない相手がいるときだけ出る。頼んでも直らなかった＝本人の操作が要る場合の最終手段 -->
     <div id="audioWarn" class="audio-warn" hidden></div>
@@ -1867,6 +1886,7 @@ const APP_VERSION = 'v0.16.24'
 // 24. ロビー（通話中の部屋の死活監視・一覧）
 // 25. 在室の Nostr 直publish（段階A）
 // 26. 閲覧者数（いまこのページを開いている人数）
+// 27. リモコン（物理ボタン・公開 Nostr リレー経由）
 // （上の 1 は APP_VERSION より前のブロックにある）
 
 const $ = id => document.getElementById(id)
@@ -6915,6 +6935,7 @@ const startSpeaking = async () => {
   addAnalyser('self', call.stream)   // 自分の絵文字も跳ねるようにする（話せている実感）
   sendTo(call.profileAction, myProfilePayload())
   renderSpeak(); renderMembers(); sendHeartbeat()
+  publishRemoteState()   // リモコン機器の LED を「マイクオン」に（27）
 }
 // 許可が外れた／自分でやめたときにマイクを返す。**掴んだままにしない**（録音インジケータが
 // 点きっぱなしになり、本人には止める手段が見えない）。
@@ -7687,6 +7708,7 @@ const armJoined = (roomId, name, bcast) => {
   vis('unlock', false)
   vis('sndPeerRow', true)   // 入室・退出音のトグルは通話中だけ表示（ミュート/退出と同じ）
   vis('sndReactRow', true)
+  publishRemoteState()   // リモコン機器へ「通話中」を知らせる（27）
   syncTtsRow(); ttsWarm()   // 読み上げは配信部屋のオーナーだけ。つなぎ直しの引き継ぎではトラックと案内だけ整え、エンジンは最初のひとことまで読まない（v0.15.2。保存はしない・v0.14.50）
   $('retry').hidden = false
   roomInput.disabled = true; lockProfile(true); syncKindRow(); syncCreateBox()
@@ -7863,6 +7885,7 @@ const toggleMute = () => {
   sendTo(call.profileAction, myProfilePayload())  // 全員へミュート状態を配信
   sendHeartbeat()  // ロビーの自分にもミュート状態を反映
   renderMembers(); renderLobby()  // 自分の行／ロビーの 🔇 を即反映
+  publishRemoteState()   // リモコン機器の LED にも（27）
 }
 $('mute').onclick = toggleMute
 
@@ -8023,6 +8046,7 @@ const leaveCall = () => {
   // ② 値を初期状態へ。lastRoom（ゾンビroom検出）と leaving は据え置かれる
   resetCall()
   boundRoomName = roomInput.value.trim()   // 退出時の部屋名を保持（同じ名前なら再入室、変えたら新部屋）
+  publishRemoteState()   // リモコン機器へ「通話していない」を知らせる（27・reset の後＝joinedId が無い状態で）
 
   // ③ 画面を「未参加」に戻す
   setCount(); renderGrow(); renderMembers(); renderLobby(); renderMute(); renderSpeak(); renderBcNote(); renderMailNow()
@@ -8159,6 +8183,123 @@ const stopHeartbeat = () => {
   if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null }
   if (lobbyPresence) lobbyPresence.send({ room: null }).catch(() => {})  // 「退出した」を明示（call.joinedId のクリア順に依存しない）
 }
+
+// ───────── 27. リモコン（物理ボタン・v0.16.25） ─────────
+// M5ATOM Matrix などの機器のボタンでミュートを切り替える。ページが裏のタブでも、スマホでも効く
+// （キーボードのショートカットは前面のタブにしか届かないので、物理ボタンはこの経路でしか作れない）。
+// 経路は在室の直 publish（25）と同じ**公開 Nostr リレー**＝運営サーバは増えない（法的 posture も変わらない）。
+// 機器側の実装は po-talk/potalk-remote（M5ATOM Matrix・PlatformIO）。ワイヤ仕様は docs/PROTOCOL.md §12。
+//
+// ペアリングコード（16 文字・このブラウザが作って保存）から、機器とページが**同じ鍵**を導く：
+//   署名鍵 = SHA-256('potalk-remote-v1/key:' + コード)　暗号鍵（NIP-44 の会話鍵）= SHA-256('potalk-remote-v1/ck:' + コード)
+// 同じ鍵なので、両者は「この公開鍵が author」のイベントだけを購読する。向きはタグ r：機器→ページ 'dev'、ページ→機器 'app'。
+// kind 20101（NIP-16 ephemeral＝リレーは保存しない）。content は NIP-44 v2 で暗号化＝コードを知らない人には読めず、作れない。
+//   機器→ページ {a:'toggle'|'hello', t}　ページ→機器 {in:通話中か, m:マイクが切れているか, t}
+// ページは状態を**変わったとき**と hello への返事、それに 50 秒ごとに流す（機器は 2 分来なければ「見つからない」を出す）。
+// 他人が同じイベントを流し直しても（リプレイ）効かない：id を覚え、created_at が前に受けたものより古いもの・いまから 60 秒
+// より離れたものは捨てる。コードを知らなければ作れないので、偽物は復号で落ちる。
+// ★鍵はコードから導くので、コードを見た人は操作できる。コードは「リモコンの鍵」として扱う（画面に出すのは設定タブの中だけ）。
+const REMOTE_KEY = 'pot-call-remote'
+const REMOTE_KIND = 20101
+const REMOTE_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ'   // 読み違えやすい I L O U を抜いた 32 文字（Crockford）
+const REMOTE_BEAT_MS = 50000
+// リレーは在室の直 publish と同じ一覧。**別の定数にしてあるのは test/serve.py のため**：テスト用サーバは在室がリレーへ漏れないよう
+// `const NOSTR_RELAYS = …` の行を空の配列に書き換える。リモコンは本物のリレーを通らないと機器に届かないし、流すのは乱数のコード
+// から導いた鍵で暗号化した toggle／状態だけ（部屋名も名前も無い）なので、テスト中も公開リレーを使ってよい（T88）
+const REMOTE_RELAYS = TRYSTERO_BASE.relayConfig.urls
+let remote = null   // ペアリング中だけ { code, sk, pk, ck, sub, lastAt, lastDevAt, seen, timer }
+const remoteCode = () => (lsGet(REMOTE_KEY) || '').replace(/[^0-9A-Z]/g, '')
+const remoteFmt = c => c.replace(/(.{4})(?=.)/g, '$1-')
+const remoteNewCode = () => { const a = new Uint8Array(16); crypto.getRandomValues(a); return [...a].map(b => REMOTE_ALPHABET[b % 32]).join('') }
+const remoteSha = async s => new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s)))
+const remoteKeys = async code => {
+  const nt = await loadNostr()
+  const sk = await remoteSha('potalk-remote-v1/key:' + code), ck = await remoteSha('potalk-remote-v1/ck:' + code)
+  return { sk, ck, pk: nt.getPublicKey(sk) }
+}
+// 機器へ状態を流す。変わったときに呼ぶ（toggleMute・参加・退出）。ペアリングしていなければ何もしない。
+// 同じ状態は流さない（force は hello への返事と定期送信）
+let remoteLastSent = ''
+const publishRemoteState = async (force = false) => {
+  if (!remote) return
+  const st = { in: !!call.joinedId, m: micOff() }
+  const sig = JSON.stringify(st)
+  if (!force && sig === remoteLastSent) return
+  remoteLastSent = sig
+  const r = remote
+  try {
+    const nt = await loadNostr()
+    nostrPool ??= new nt.SimplePool()
+    if (remote !== r) return
+    const t = Math.floor(Date.now() / 1000)
+    const evt = nt.finalizeEvent({ kind: REMOTE_KIND, created_at: t, tags: [['r', 'app']],
+      content: nt.nip44.v2.encrypt(JSON.stringify({ ...st, t }), r.ck) }, r.sk)
+    nostrPool.publish(REMOTE_RELAYS, evt).forEach(p => p.catch(() => {}))
+  } catch {}
+}
+const remoteSubscribe = async () => {
+  const r = remote; if (!r) return
+  const nt = await loadNostr()
+  nostrPool ??= new nt.SimplePool()
+  if (remote !== r) return
+  try { r.sub?.close() } catch {}
+  r.sub = nostrPool.subscribeMany(REMOTE_RELAYS, [{ kinds: [REMOTE_KIND], authors: [r.pk], '#r': ['dev'], since: Math.floor(Date.now() / 1000) - 60 }], {
+    onevent: ev => {
+      if (remote !== r || ev.pubkey !== r.pk || r.seen.has(ev.id)) return
+      const now = Math.floor(Date.now() / 1000)
+      if (Math.abs(now - ev.created_at) > 60 || ev.created_at < r.lastAt) return   // 古い・巻き戻し
+      let msg; try { msg = JSON.parse(nt.nip44.v2.decrypt(ev.content, r.ck)) } catch { return }
+      if (r.seen.size > 64) r.seen.clear()
+      r.seen.add(ev.id); r.lastAt = ev.created_at; r.lastDevAt = Date.now()
+      if (msg.a === 'toggle') { if (call.stream) toggleMute(); else publishRemoteState(true) }   // マイクが無ければ状態だけ返す
+      else if (msg.a === 'hello') publishRemoteState(true)
+      renderRemote()
+    }
+  })
+}
+// リレーが全部落ちていたら購読を張り直す（SimplePool は自分では繋ぎ直さない）。前面に戻ったときも張り直す（iOS は裏で WebSocket を切る）
+const remoteWatch = () => {
+  if (!remote || !nostrPool) return
+  const st = nostrPool.listConnectionStatus?.()
+  if (st && [...st.values()].some(Boolean)) return
+  remoteSubscribe()
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden && remote) { remoteSubscribe(); publishRemoteState(true) } })
+const startRemote = async () => {
+  stopRemote()
+  const code = remoteCode(); if (code.length !== 16) { renderRemote(); return }
+  try {
+    const k = await remoteKeys(code)
+    remote = { code, ...k, sub: null, lastAt: 0, lastDevAt: 0, seen: new Set(), timer: null }
+    remote.timer = setInterval(() => { publishRemoteState(true); remoteWatch() }, REMOTE_BEAT_MS)
+    await remoteSubscribe()
+    publishRemoteState(true)
+  } catch { remote = null }
+  renderRemote()
+}
+const stopRemote = () => {
+  if (!remote) return
+  clearInterval(remote.timer); try { remote.sub?.close() } catch {}
+  remote = null; remoteLastSent = ''
+}
+const renderRemote = () => {
+  const code = remoteCode()
+  $('remoteOff').hidden = !!code; $('remoteOn').hidden = !code
+  $('remoteCode').textContent = code ? remoteFmt(code) : ''
+  const seen = remote && remote.lastDevAt && Date.now() - remote.lastDevAt < 120000
+  $('remoteStat').textContent = !code ? '' : !remote ? '準備中…' : seen ? '✓ 機器とつながっています' : '機器からの合図を待っています'
+}
+$('remotePair').onclick = () => { lsSet(REMOTE_KEY, remoteNewCode()); startRemote() }
+$('remoteCopy').onclick = async () => {
+  const ok = await copyText(remoteFmt(remoteCode()))
+  $('remoteCopy').textContent = ok ? 'コピーしました ✓' : 'コピーできませんでした'
+  setTimeout(() => { $('remoteCopy').textContent = 'コードをコピー' }, 1500)
+}
+$('remoteUnpair').onclick = () => { stopRemote(); try { localStorage.removeItem(REMOTE_KEY) } catch {} renderRemote() }
+// キーボードの F13 でもミュート（前面のタブにいるときだけ効く＝OS のグローバルショートカットではない。
+// BLE キーボードとして振る舞う機器を F13 に当てる用途）。入力欄の中でも F13 は文字にならないので塞がない
+document.addEventListener('keydown', e => { if (e.key === 'F13' && !e.repeat && call.stream) { e.preventDefault(); toggleMute() } })
+startRemote()
 
 // 部屋の継続時間。その部屋にいる全員のうち「一番長くいる人の滞在時間」＝部屋が始まってからの時間。
 // 最古の人が抜けると max が次点に落ちて数字が巻き戻るので、部屋ごとに最大値を覚えて減らさない。
