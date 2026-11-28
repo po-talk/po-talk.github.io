@@ -1,0 +1,3 @@
+# GitHub Pages (Jekyll) はドット始まりのディレクトリを無視するため、NIP-05 用に明示的に含める
+include:
+  - .well-known
